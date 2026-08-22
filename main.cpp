@@ -1179,6 +1179,13 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		ImGuiIO& io = ImGui::GetIO();
 		io.IniFilename = NULL; // don't write imgui.ini next to the game
 		io.LogFilename = NULL; // don't write imgui_log.txt next to the game
+		// Cursor flicker fix: Quake 3 hides the OS mouse cursor during gameplay and draws
+		// its own crosshair, while the ImGui Win32 backend toggles the cursor shape every
+		// frame with ::SetCursor()/::SetCursor(nullptr). The two fight over the cursor and
+		// it visibly flickers. Stop ImGui from touching the OS cursor and have it draw its
+		// own software cursor inside the frame instead, so the menu cursor is stable.
+		io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+		io.MouseDrawCursor = true;
 		ImGui::StyleColorsDark();
 
 		// platform + renderer backends (the fixed function OpenGL2 backend fits Quake 3's legacy GL context)
