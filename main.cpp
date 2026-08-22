@@ -739,7 +739,7 @@ void DrawChamsWireframe(GLenum mode, GLsizei count, GLenum type, const GLvoid *i
 	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 	glEnable(GL_POLYGON_OFFSET_LINE);
 	glEnable(GL_LINE_LOOP);
-	glLineWidth(2.5);
+	glLineWidth(2.5f);
 	glPolygonMode(GL_FRONT, GL_LINE);
 	glEnable(GL_CULL_FACE);
 	glCullFace(GL_BACK);
@@ -766,7 +766,7 @@ void DrawChamsWireframe(GLenum mode, GLsizei count, GLenum type, const GLvoid *i
 	glEnable(GL_TEXTURE_2D);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glScalef(0.99, 1.01, 1.0);
+	glScalef(0.99f, 1.01f, 1.0f);
 	EnableDepthTest(); //glEnable(GL_DEPTH_TEST);
 	origglDrawElements(mode, count, type, indices);
 	ColorFunc(20, 20, 20, 120); //black
@@ -851,7 +851,7 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 		glEnable(GL_POLYGON_OFFSET_LINE);
 		glEnable(GL_LINE_LOOP);
-		glLineWidth(2.5);
+		glLineWidth(2.5f);
 		glPolygonMode(GL_FRONT, GL_LINE);
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
@@ -879,7 +879,7 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 		glEnable(GL_TEXTURE_2D);
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glScalef(0.99, 1.01, 1.0);
+		glScalef(0.99f, 1.01f, 1.0f);
 		glEnable(GL_DEPTH_TEST);
 		origglDrawElements(mode, count, type, indices);
 		ColorFunc(20, 20, 20, 120);//ColorFunc(20, 20, 20, 120); //black
@@ -903,7 +903,7 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 		glEnable(GL_POLYGON_OFFSET_LINE);
 		glEnable(GL_LINE_LOOP);
-		glLineWidth(2.5);
+		glLineWidth(2.5f);
 		glPolygonMode(GL_FRONT, GL_LINE);
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
@@ -937,7 +937,7 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 		glEnable(GL_TEXTURE_2D);
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glScalef(0.99, 1.01, 1.0);
+		glScalef(0.99f, 1.01f, 1.0f);
 		EnableDepthTest();//glEnable(GL_DEPTH_TEST);
 		origglDrawElements(mode, count, type, indices);
 		ColorFunc(20, 20, 20, 120); //black
@@ -1114,6 +1114,9 @@ void RenderKutaQ3Menu()
 	ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "ImGui %s", IMGUI_VERSION);
 	ImGui::End();
 }
+
+// Forward declare ImGui Win32 message handler (intentionally omitted from imgui_impl_win32.h to avoid <windows.h> dependency)
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // window procedure hook: feeds input to ImGui and swallows it while the menu is open
 LRESULT CALLBACK kutaQ3WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
