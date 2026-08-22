@@ -1116,6 +1116,7 @@ void RenderKutaQ3Menu()
 }
 
 // window procedure hook: feeds input to ImGui and swallows it while the menu is open
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK kutaQ3WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	// give ImGui first pick at the message
