@@ -11,6 +11,12 @@
 // subset of the legacy state it changes. The guard below saves/restores the rest, which is what
 // stops the game from flickering while the menu is up.
 #include "glStateGuard.h"
+
+// kutaQ3 hook - DirectInput8 mouse routing (see dinput8Hook.h).
+// With in_mouse 1 Quake 3 grabs the mouse through DirectInput8, so the OS cursor is frozen and the
+// WM_MOUSEMOVE messages the ImGui Win32 backend relies on never arrive. This hooks the device
+// vtable, feeds the real mouse deltas into ImGui and zeroes them for the game while the menu is up.
+#include "dinput8Hook.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -1177,6 +1183,12 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 
 	bInSwapBuffersHook = true;
 
+	// kutaQ3 hook - DirectInput8 mouse routing. Install the device vtable hooks the first time
+	// dinput8.dll is resident (idempotent), and tell it each frame whether the menu is capturing
+	// the mouse. Runs before the ImGui frame below, so the routed mouse events are ready by NewFrame.
+	DInput::Install();
+	DInput::SetMenuOpen(bMenuShown && bImGuiReady);
+
 	if (!bImGuiReady)
 	{
 		// ImGui init binds and uploads textures on the game's GL context - keep our hooks out of the
@@ -1247,6 +1259,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 
 		ImGui_ImplOpenGL2_NewFrame();
 		ImGui_ImplWin32_NewFrame();
+		// Re-queue the DirectInput-routed cursor AFTER the Win32 backend's NewFrame (which would
+		// otherwise overwrite it with the frozen GetCursorPos position) and before ImGui::NewFrame
+		// consumes the input queue. No-op when the menu is closed / DirectInput is not used.
+		DInput::RefeedMousePos();
 		// Draw ImGui's software cursor only while its menu is visible.
 		ImGui::GetIO().MouseDrawCursor = bMenuShown;
 		ImGui::NewFrame();
@@ -1417,6 +1433,10 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 
 	case DLL_PROCESS_DETACH:
 		{
+			// restore the DirectInput8 vtable before anything else, so the game never calls into
+			// unmapped hook code once this DLL is freed
+			DInput::Shutdown();
+
 			// shut down the kutaQ3 hook menu
 			if (bImGuiReady)
 			{

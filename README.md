@@ -8,6 +8,39 @@ is rendered on top of the game every frame using Dear ImGui (the bloat-free imme
 GUI for C++) with the fixed-function OpenGL2 backend (`imgui/imgui_impl_opengl2.cpp` +
 `imgui/imgui_impl_opengl2.h`), which fits Quake 3's legacy GL context.
 
+## DirectInput8 mouse routing (in_mouse 1)
+
+With its default `in_mouse 1`, Quake 3 reads the mouse through DirectInput8
+(`IDirectInputDevice8`). While that device is acquired (foreground/exclusive) the OS cursor is
+frozen and **no** `WM_MOUSEMOVE` / mouse-button messages reach the game window - DirectInput
+consumes them at the HID level. The ImGui Win32 backend only ever learns about the cursor from
+those window messages, so with the menu open the cursor would be stuck in place. Hooking
+`GetCursorPos` (the `in_mouse -1` Win32 path) is useless here because the game never calls it.
+
+`dinput8Hook.h` / `dinput8Hook.cpp` solve this by hooking the **device vtable**:
+
+- `Install()` resolves `dinput8.dll`, creates a throwaway `IDirectInput8` + system mouse device
+  purely to read the address of the single shared `IDirectInputDevice8` vtable out of it, then
+  patches two entries on it with `VirtualProtect`: `GetDeviceState` (vtable[9]) and `GetDeviceData`
+  (vtable[10]). Patching the shared static vtable reaches the game's own mouse device regardless of
+  when it was created, so it works for both early and late injection. No DirectX SDK headers or
+  `dxguid.lib` are needed - the COM signatures and GUIDs are declared locally.
+- While the menu is open, the hooks read the real mouse deltas / wheel / buttons out of the device
+  data, route them into ImGui (`AddMousePosEvent` / `AddMouseButtonEvent` / `AddMouseWheelEvent`)
+  and then **zero** the data before returning it to Quake 3 - so the game neither looks around nor
+  fires while you drive the menu. While the menu is closed, both calls pass straight through
+  untouched (in-game mouse is unaffected).
+- One subtlety: the ImGui Win32 backend re-feeds the (frozen) OS cursor from `GetCursorPos` inside
+  `ImGui_ImplWin32_NewFrame()` whenever the mouse is not tracked via `WM_MOUSEMOVE` - which is always
+  under DirectInput. So `DInput::RefeedMousePos()` re-queues the routed position **after** the
+  backend's `NewFrame` and before `ImGui::NewFrame()` consumes the input queue, making the routed
+  position the last (winning) mouse-position event of the frame.
+- `Shutdown()` restores the original vtable entries on DLL unload so the game never calls into freed
+  hook code.
+
+The keyboard is unaffected - Quake 3 keeps the keyboard on Win32 messages, so the existing
+`INSERT` toggle and `F10` shader logging keep working.
+
 ## Legacy GL state guard (flicker fix)
 
 Quake 3 drives a legacy OpenGL 1.1 fixed-function pipeline and keeps its **own shadow copy** of the
