@@ -2,8 +2,8 @@
 
 OpenGL hook DLL for Quake III Arena with a Dear ImGui in-game menu.
 
-The DLL hooks `wglSwapBuffers`, `glBindTexture`, `glDrawElements`, `glVertexPointer`,
-`CreateWindowExA` and `LoadLibraryExA` with Microsoft Detours. The **"kutaQ3 hook"** menu
+The DLL hooks `SwapBuffers` (with a `wglSwapBuffers` fallback), `glBindTexture`, `glDrawElements`,
+`glVertexPointer`, `CreateWindowExA` and `LoadLibraryExA` with Microsoft Detours. The **"kutaQ3 hook"** menu
 is rendered on top of the game every frame using Dear ImGui (the bloat-free immediate mode
 GUI for C++) with the fixed-function OpenGL2 backend, which fits Quake 3's legacy GL context.
 

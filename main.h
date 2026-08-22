@@ -75,7 +75,7 @@ void ColorFunc(int r, int g, int b, int a)
 typedef void (WINAPI *glBindTexture_t) (GLenum target, GLuint texture);
 typedef void (WINAPI *glDrawElements_t) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
 typedef void (WINAPI *glVertexPointer_t) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-typedef void (__stdcall *wglSwapBuffers_t) (HDC hDC);
+typedef BOOL (WINAPI *SwapBuffers_t) (HDC hDC);
 
 
 typedef HWND(WINAPI *CreateWindowExA_t) (
@@ -106,7 +106,7 @@ typedef HMODULE(WINAPI *LoadLibraryExA_t) (
 glBindTexture_t origglBindTexture;
 glDrawElements_t origglDrawElements;
 glVertexPointer_t origglVertexPointer;
-wglSwapBuffers_t origwglSwapBuffers;
+SwapBuffers_t origwglSwapBuffers;
 CreateWindowExA_t origCreateWindowExA;
 LoadLibraryExA_t origLoadLibraryExA;
 
