@@ -1153,8 +1153,17 @@ LRESULT CALLBACK kutaQ3WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 
 // hooked wglSwapBuffers: the frame is already drawn when this runs, so this is
 // where the "kutaQ3 hook" menu is rendered on top of the game scene.
-void __stdcall newwglSwapBuffers(HDC hDC)
+BOOL WINAPI newwglSwapBuffers(HDC hDC)
 {
+	// SwapBuffers is the right place for ImGui: it runs once at the end of a presented
+	// frame. If a driver/game path re-enters SwapBuffers, do not build another ImGui
+	// frame inside the same call chain.
+	static bool bInSwapBuffersHook = false;
+	if (bInSwapBuffersHook)
+		return origwglSwapBuffers ? origwglSwapBuffers(hDC) : FALSE;
+
+	bInSwapBuffersHook = true;
+
 	if (!bImGuiReady)
 	{
 		// ImGui init binds and uploads textures on the game's GL context - keep our hooks out of the way
@@ -1218,7 +1227,9 @@ void __stdcall newwglSwapBuffers(HDC hDC)
 	bInsideImgui = false;
 
 	// call original
-	origwglSwapBuffers(hDC);
+	BOOL result = origwglSwapBuffers ? origwglSwapBuffers(hDC) : FALSE;
+	bInSwapBuffersHook = false;
+	return result;
 
 }
 
@@ -1286,7 +1297,7 @@ void HookFunctions()
 {
 	//Initialise();
 	HMODULE oMod = GetModuleHandle("opengl32.dll");
-    //HMODULE gMod = GetModuleHandle("gdi32.dll");
+	HMODULE gMod = GetModuleHandle("gdi32.dll");
 	HMODULE uMod = GetModuleHandle("User32.dll");
 	HMODULE kMod = GetModuleHandle("kernel32.dll");
 
@@ -1298,29 +1309,35 @@ void HookFunctions()
 			origglBindTexture = (glBindTexture_t)(DWORD)GetProcAddress(oMod, "glBindTexture");
 			origglDrawElements = (glDrawElements_t)(DWORD)GetProcAddress(oMod, "glDrawElements");
 			origglVertexPointer = (glVertexPointer_t)(DWORD)GetProcAddress(oMod, "glVertexPointer");
-			origwglSwapBuffers = (wglSwapBuffers_t)(DWORD)GetProcAddress(oMod, "wglSwapBuffers");
 
 			DetourTransactionBegin();
 			DetourUpdateThread(GetCurrentThread());
 			DetourAttach(&(PVOID &)origglBindTexture, newglBindTexture);
 			DetourAttach(&(PVOID &)origglDrawElements, newglDrawElements);
 			DetourAttach(&(PVOID &)origglVertexPointer, newglVertexPointer);
-			DetourAttach(&(PVOID &)origwglSwapBuffers, newwglSwapBuffers);
 			DetourTransactionCommit();
 		}
 
-		/*
+		// Quake 3 presents frames through the Win32 GDI SwapBuffers(HDC) export.
+		// Hooking this end-of-frame call renders ImGui once per presented frame.
+		// Rendering ImGui from glDrawElements/glBegin would run once per draw call and
+		// makes the menu appear to be drawn many times.
 		if (gMod)
-		{
-			origwglSwapBuffers = (wglSwapBuffers_t)(DWORD)GetProcAddress(gMod, "SwapBuffers");
+			origwglSwapBuffers = (SwapBuffers_t)(DWORD)GetProcAddress(gMod, "SwapBuffers");
 
+		if (!origwglSwapBuffers && oMod)
+		{
+			// Fallback for wrappers that expose wglSwapBuffers from opengl32.dll.
+			origwglSwapBuffers = (SwapBuffers_t)(DWORD)GetProcAddress(oMod, "wglSwapBuffers");
+		}
+
+		if (origwglSwapBuffers)
+		{
 			DetourTransactionBegin();
 			DetourUpdateThread(GetCurrentThread());
 			DetourAttach(&(PVOID &)origwglSwapBuffers, newwglSwapBuffers);
 			DetourTransactionCommit();
 		}
-		*/
-
 
 		if (uMod)
 		{
@@ -1382,7 +1399,8 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 			DetourDetach(&(PVOID &)origglBindTexture, newglBindTexture);
 			DetourDetach(&(PVOID &)origglDrawElements, newglDrawElements);
 			DetourDetach(&(PVOID &)origglVertexPointer, newglVertexPointer);
-			DetourDetach(&(PVOID &)origwglSwapBuffers, newwglSwapBuffers);
+			if (origwglSwapBuffers)
+				DetourDetach(&(PVOID &)origwglSwapBuffers, newwglSwapBuffers);
 			DetourDetach(&(PVOID &)origCreateWindowExA, newCreateWindowExA);
 			DetourDetach(&(PVOID &)origLoadLibraryExA, newLoadLibraryExA);
 
