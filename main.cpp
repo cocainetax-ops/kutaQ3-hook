@@ -12,11 +12,12 @@
 // stops the game from flickering while the menu is up.
 #include "glStateGuard.h"
 
-// kutaQ3 hook - DirectInput8 mouse routing (see dinput8Hook.h).
-// With in_mouse 1 Quake 3 grabs the mouse through DirectInput8, so the OS cursor is frozen and the
-// WM_MOUSEMOVE messages the ImGui Win32 backend relies on never arrive. This hooks the device
-// vtable, feeds the real mouse deltas into ImGui and zeroes them for the game while the menu is up.
-#include "dinput8Hook.h"
+// kutaQ3 hook - legacy DirectInput mouse routing (see dinputHook.h).
+// With in_mouse 1 retail Quake 3 grabs the mouse through the legacy DirectInput path in dinput.dll
+// (DirectInputCreate -> IDirectInputDevice), so the OS cursor is frozen and the WM_MOUSEMOVE
+// messages the ImGui Win32 backend relies on never arrive. This hooks the device vtable, feeds the
+// real mouse deltas into ImGui and zeroes them for the game while the menu is up.
+#include "dinputHook.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -1183,9 +1184,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 
 	bInSwapBuffersHook = true;
 
-	// kutaQ3 hook - DirectInput8 mouse routing. Install the device vtable hooks the first time
-	// dinput8.dll is resident (idempotent), and tell it each frame whether the menu is capturing
-	// the mouse. Runs before the ImGui frame below, so the routed mouse events are ready by NewFrame.
+	// kutaQ3 hook - legacy DirectInput mouse routing. Install the device vtable hooks the first
+	// time dinput.dll is resident (idempotent), and tell it each frame whether the menu is
+	// capturing the mouse. Runs before the ImGui frame below, so the routed mouse events are ready
+	// by NewFrame.
 	DInput::Install();
 	DInput::SetMenuOpen(bMenuShown && bImGuiReady);
 
@@ -1433,8 +1435,8 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 
 	case DLL_PROCESS_DETACH:
 		{
-			// restore the DirectInput8 vtable before anything else, so the game never calls into
-			// unmapped hook code once this DLL is freed
+			// restore the legacy DirectInput device vtables before anything else, so the game
+			// never calls into unmapped hook code once this DLL is freed
 			DInput::Shutdown();
 
 			// shut down the kutaQ3 hook menu
