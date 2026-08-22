@@ -1,11 +1,39 @@
 #include "main.h" //tools here
 
-#include <map>  //needed for swapbuffers context code
+// Dear ImGui - bloat-free immediate mode graphical user interface library for C++
+// https://github.com/ocornut/imgui
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_win32.h"
+#include "imgui/imgui_impl_opengl2.h"
+// =============================================================================================== //
+
+// =============================================================================================== //
+// kutaQ3 hook - ImGui menu state
+bool bImGuiReady = false;     // true once the ImGui backends are initialized
+bool bInsideImgui = false;    // true while ImGui is rendering - hooked GL calls must pass straight through
+bool bMenuShown = true;       // menu visibility (INSERT toggles) - shown on first injection
+HWND g_GameHwnd = NULL;       // the game window the menu is attached to
+WNDPROC oGameWndProc = NULL;  // the game's original window procedure
+
+// feature toggles exposed in the "kutaQ3 hook" menu
+bool bChamsEnabled = true;    // master toggle for the wallhack chams
+int  iChamsStyle   = 0;       // 0 = solid, 1 = wireframe
+bool bLogShaders   = true;    // log player shader names to log.txt while F10 is held
 // =============================================================================================== //
 
 
 void WINAPI newglBindTexture(GLenum target, GLuint texture)
 {
+
+	// ImGui's OpenGL2 backend binds its font atlas texture while it renders - those calls must go
+	// straight to the original, otherwise the ESI shader sniffing below would dereference a garbage
+	// pointer and crash the game.
+	if (bInsideImgui)
+	{
+		CurrentTexture = texture;
+		(*origglBindTexture)(target, texture);
+		return;
+	}
 
 	//get shader
 	//Shader = *((char **)0x016BB418); //mov     eax, dword_16BB418
@@ -618,6 +646,7 @@ void WINAPI newglBindTexture(GLenum target, GLuint texture)
 		*/ 
 	
 	//the way I logged players for Quake 3
+		if (bLogShaders)
 		if (GetAsyncKeyState(VK_F10) < 0)
 			if (texture != NULL && Shader != NULL)
 				if (strstr((char*)Shader, "models/players"))
@@ -679,6 +708,70 @@ void TransChams(int r, int g, int b, int a, int r2, int g2, int b2, int a2, GLen
 	glEnable(GL_DEPTH_TEST);
 	glPopMatrix();
 }
+
+// =============================================================================================== //
+// chams styles selectable from the "kutaQ3 hook" menu
+
+// solid chams: flat colour behind walls + flat colour in front of walls
+void DrawChamsSolid(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
+{
+	if (free_for_all_player_models)
+	{
+		TransChams(255, 0, 255, 120, 0, 255, 0, 255, mode, count, type, indices); //Behind wall PINK / Infront wall GREEN - in this order (RGBA)
+	}
+	else if (blue_team_player_models)
+	{
+		TransChams(255, 255, 255, 120, 0, 255, 255, 255, mode, count, type, indices); //Behind wall WHITE / Infront wall BLUE - in this order (RGBA)
+	}
+	else if (red_team_player_models)
+	{
+		TransChams(255, 80, 0, 255, 255, 0, 0, 255, mode, count, type, indices); //Behind wall YELLOW / Infront wall RED - in this order (RGBA)
+	}
+}
+
+// wireframe chams: wireframe outline behind walls + solid colour in front of walls
+void DrawChamsWireframe(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
+{
+	glPushMatrix();
+	DisableDepthTest(); //glDisable(GL_DEPTH_TEST);
+	glDisable(GL_TEXTURE_2D);
+	ColorFunc(0, 0, 0, 255); //black
+	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+	glEnable(GL_POLYGON_OFFSET_LINE);
+	glEnable(GL_LINE_LOOP);
+	glLineWidth(2.5);
+	glPolygonMode(GL_FRONT, GL_LINE);
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_BACK);
+	if (free_for_all_player_models)
+		glColor4ub(255, 0, 255, 255); //behind walls (pink colour)
+	else if (red_team_player_models)
+		glColor4ub(255, 80, 0, 255); //behind walls (yellow colour)
+	else if (blue_team_player_models)
+		glColor4ub(255, 255, 255, 255); //behind walls (white colour)
+	origglDrawElements(mode, count, type, indices);
+
+	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+	glEnable(GL_DEPTH_TEST);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	glScalef(1, 1, 1);
+	if (free_for_all_player_models)
+		glColor4ub(38, 255, 38, 255); //infront of walls (green colour)
+	else if (red_team_player_models)
+		glColor4ub(255, 0, 0, 255); //infront of walls (red colour)
+	else if (blue_team_player_models)
+		glColor4ub(0, 255, 255, 255); //infront of walls (blue colour)
+	origglDrawElements(mode, count, type, indices);
+
+	glEnable(GL_TEXTURE_2D);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glScalef(0.99, 1.01, 1.0);
+	EnableDepthTest(); //glEnable(GL_DEPTH_TEST);
+	origglDrawElements(mode, count, type, indices);
+	ColorFunc(20, 20, 20, 120); //black
+	glPopMatrix();
+}
 // =============================================================================================== //
 
 
@@ -686,26 +779,31 @@ void TransChams(int r, int g, int b, int a, int r2, int g2, int b2, int a2, GLen
 
 void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
+	// ImGui's OpenGL2 backend also draws indexed geometry - pass its draw calls through untouched,
+	// otherwise the menu would get tinted/transparent because of the chams code below.
+	if (bInsideImgui)
+	{
+		// call original
+		(*origglDrawElements)(mode, count, type, indices);
+		return;
+	}
+
 	//chams solid - working
-	if (free_for_all_player_models)
+	if (bChamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
 	{
-		TransChams(255, 0, 255, 120, 0, 255, 0, 255, mode, count, type, indices); //Behind wall PINK / Infront wall GREEN - in this order (RGBA)
-
+		if (iChamsStyle == 1)
+		{
+			DrawChamsWireframe(mode, count, type, indices); //wireframe outline behind walls / solid colour infront of walls
+		}
+		else
+		{
+			DrawChamsSolid(mode, count, type, indices); //solid colour behind walls / solid colour infront of walls
+		}
 	}
-	else if (blue_team_player_models)
+	else
 	{
-	TransChams(255, 255, 255, 120, 0, 255, 255, 255, mode, count, type, indices); //Behind wall WHITE / Infront wall BLUE - in this order (RGBA)
-
+		glEnable(GL_TEXTURE_2D);
 	}
-	else if (red_team_player_models)
-	{
-		TransChams(255, 80, 0, 255, 255, 0, 0, 255, mode, count, type, indices); //Behind wall YELLOW / Infront wall RED - in this order (RGBA)
-
-	}
-	else if (!free_for_all_player_models && !red_team_player_models && !blue_team_player_models)
-	{
-	glEnable(GL_TEXTURE_2D);
-   }
 
 
 	/*
@@ -985,88 +1083,140 @@ void __stdcall newwglSwapBuffers(HDC hDC)
 
 
 // so far below working great USE BELOW!!!
-std::map<int, HGLRC> contexts;
+// =============================================================================================== //
+// kutaQ3 hook - ImGui rendering (runs inside the hooked wglSwapBuffers)
 
-void __stdcall newwglSwapBuffers(HDC hDC)
-
+// the menu window - called it "kutaQ3 hook"
+void RenderKutaQ3Menu()
 {
-
-	void initialise_draw_text();
+	ImGui::SetNextWindowSize(ImVec2(300, 185), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("kutaQ3 hook", &bMenuShown, ImGuiWindowFlags_NoCollapse))
 	{
-		GL::Font glFont;
-
-		HDC currentHDC = wglGetCurrentDC();
-
-		if (!glFont.bBuilt || currentHDC != glFont.hdc)
-		{
-			glFont.Build(FONT_HEIGHT);
-		}
-
-
-		
-
-
-		int pixelformat = GetPixelFormat(hDC);
-
-		// save old context and create your own, if not already created
-		HGLRC oldctx = wglGetCurrentContext();
-	    HDC oldhdc = wglGetCurrentDC();
-
-
-		if (!contexts.count(pixelformat))
-			
-		{
-			HGLRC myContext = wglCreateContext(hDC);
-			HGLRC gameContext = wglGetCurrentContext();
-			HDC old_dc = wglGetCurrentDC();
-			
-			wglMakeCurrent(hDC, myContext);
-			
-
-			// Enable & Disable OpenGL Attributes
-
-			//Ex:
-			//glEnable(GL_BLEND);
-			//glEnable(GL_DEPTH_TEST);
-			//glDisable(GL_CULL_FACE);
-			// ...
-			
-
-			wglMakeCurrent(old_dc, gameContext);
-			
-			contexts[pixelformat] = myContext;
-		
-		}
-		
-		//wglMakeCurrent(hDC, contexts[pixelformat]);
-		
-		
-		GL::SetupOrtho();
-
-
-		glFont.Print(100, 100, rgb::red, "Jesus loves ya");
-
-		GL::DrawFilledRect(300, 300, 200, 200, rgb::red);
-		GL::DrawOutline(550, 400, 200, 200, 1, rgb::green);
-		
-		
-		wglMakeCurrent(hDC, contexts[pixelformat]);//leave it here allows text to print work
-		glEnd(); //leave here
-
-
-		//Sleep(1); //might be needed to stop flickering of the draw code
-
-
-		// restore to old context
-		wglMakeCurrent(oldhdc, oldctx);
-		
-		
-		//End draw here
-		GL::RestoreGL();
+		ImGui::End();
+		return;
 	}
-	
 
+	ImGui::Text("Quake 3 OpenGL hook");
+	ImGui::Separator();
 
+	ImGui::Checkbox("Chams (wallhack)", &bChamsEnabled);
+	if (bChamsEnabled)
+	{
+		ImGui::RadioButton("Solid", &iChamsStyle, 0);
+		ImGui::SameLine();
+		ImGui::RadioButton("Wireframe", &iChamsStyle, 1);
+	}
+
+	ImGui::Checkbox("Log player shaders (F10)", &bLogShaders);
+
+	ImGui::Separator();
+	ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Press INSERT to show/hide this menu.");
+	ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "ImGui %s", IMGUI_VERSION);
+	ImGui::End();
+}
+
+// window procedure hook: feeds input to ImGui and swallows it while the menu is open
+LRESULT CALLBACK kutaQ3WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	// give ImGui first pick at the message
+	if (bImGuiReady)
+		if (ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam) && bMenuShown)
+			return 0;
+
+	// INSERT toggles the menu
+	if (uMsg == WM_KEYDOWN && wParam == VK_INSERT)
+	{
+		bMenuShown = !bMenuShown;
+		return 0;
+	}
+
+	// while the menu is open, don't let the game react to mouse/keyboard input
+	if (bMenuShown)
+	{
+		switch (uMsg)
+		{
+		case WM_MOUSEMOVE:
+		case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+		case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+		case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+		case WM_MOUSEWHEEL:
+		case WM_KEYDOWN: case WM_KEYUP:
+		case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+		case WM_CHAR:
+			return 0;
+		}
+	}
+
+	return CallWindowProc(oGameWndProc, hWnd, uMsg, wParam, lParam);
+}
+
+// hooked wglSwapBuffers: the frame is already drawn when this runs, so this is
+// where the "kutaQ3 hook" menu is rendered on top of the game scene.
+void __stdcall newwglSwapBuffers(HDC hDC)
+{
+	if (!bImGuiReady)
+	{
+		// ImGui init binds and uploads textures on the game's GL context - keep our hooks out of the way
+		bInsideImgui = true;
+
+		HWND hwnd = WindowFromDC(hDC);
+		if (!hwnd) hwnd = GetForegroundWindow();
+		g_GameHwnd = hwnd;
+
+		// Dear ImGui context & style
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGuiIO& io = ImGui::GetIO();
+		io.IniFilename = NULL; // don't write imgui.ini next to the game
+		io.LogFilename = NULL; // don't write imgui_log.txt next to the game
+		ImGui::StyleColorsDark();
+
+		// platform + renderer backends (the fixed function OpenGL2 backend fits Quake 3's legacy GL context)
+		ImGui_ImplWin32_Init(hwnd);
+		ImGui_ImplOpenGL2_Init();
+
+		// subclass the game window so the menu receives mouse/keyboard input
+		oGameWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)kutaQ3WndProc);
+		if (!oGameWndProc) oGameWndProc = DefWindowProc;
+
+		bImGuiReady = true;
+		bInsideImgui = false;
+	}
+	else
+	{
+		// the game may recreate its window (e.g. vid_restart) - rebind the input backend then
+		HWND hwnd = WindowFromDC(hDC);
+		if (hwnd && hwnd != g_GameHwnd)
+		{
+			if (oGameWndProc && IsWindow(g_GameHwnd))
+				SetWindowLongPtr(g_GameHwnd, GWLP_WNDPROC, (LONG_PTR)oGameWndProc);
+			g_GameHwnd = hwnd;
+			bInsideImgui = true;
+			ImGui_ImplWin32_Shutdown();
+			ImGui_ImplWin32_Init(hwnd);
+			oGameWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)kutaQ3WndProc);
+			bInsideImgui = false;
+		}
+	}
+
+	// build the frame
+	// (ImGui may (re)create its font texture during NewFrame, so the guard stays up for the whole frame)
+	bInsideImgui = true;
+	ImGui_ImplOpenGL2_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+	ImGui::NewFrame();
+
+	if (bMenuShown)
+		RenderKutaQ3Menu();
+
+	ImGui::EndFrame();
+	ImGui::Render();
+
+	// draw the menu on top of the game scene, then let the game swap
+	ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+	bInsideImgui = false;
+
+	// call original
 	origwglSwapBuffers(hDC);
 
 }
@@ -1214,6 +1364,18 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 
 	case DLL_PROCESS_DETACH:
 		{
+			// shut down the kutaQ3 hook menu
+			if (bImGuiReady)
+			{
+				if (oGameWndProc && IsWindow(g_GameHwnd))
+					SetWindowLongPtr(g_GameHwnd, GWLP_WNDPROC, (LONG_PTR)oGameWndProc);
+				if (wglGetCurrentContext() != NULL) // renderer teardown touches GL - needs a live context
+					ImGui_ImplOpenGL2_Shutdown();
+				ImGui_ImplWin32_Shutdown();
+				ImGui::DestroyContext();
+				bImGuiReady = false;
+			}
+
 			DetourTransactionBegin();
 			DetourUpdateThread(GetCurrentThread());
 			DetourDetach(&(PVOID &)origglBindTexture, newglBindTexture);
