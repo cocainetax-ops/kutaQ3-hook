@@ -5,12 +5,25 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_win32.h"
 #include "imgui/imgui_impl_opengl2.h"
+
+// kutaQ3 hook - legacy fixed function GL state guard (see glStateGuard.h).
+// The OpenGL2 backend is the right renderer for Quake 3's GL 1.1 context, but it only restores a
+// subset of the legacy state it changes. The guard below saves/restores the rest, which is what
+// stops the game from flickering while the menu is up.
+#include "glStateGuard.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
 // kutaQ3 hook - ImGui menu state
 bool bImGuiReady = false;     // true once the ImGui backends are initialized
 bool bInsideImgui = false;    // true while ImGui is rendering - hooked GL calls must pass straight through
+
+// A hooked GL call belongs to the menu when either the manual flag is up (backend init/shutdown)
+// or a legacy state guard is live on this thread (the per frame menu rendering).
+static inline bool IsImGuiDrawing()
+{
+	return bInsideImgui || GL::LegacyStateGuard::IsActive();
+}
 bool bMenuShown = true;       // menu visibility (INSERT toggles) - shown on first injection
 HWND g_GameHwnd = NULL;       // the game window the menu is attached to
 WNDPROC oGameWndProc = NULL;  // the game's original window procedure
@@ -28,7 +41,7 @@ void WINAPI newglBindTexture(GLenum target, GLuint texture)
 	// ImGui's OpenGL2 backend binds its font atlas texture while it renders - those calls must go
 	// straight to the original, otherwise the ESI shader sniffing below would dereference a garbage
 	// pointer and crash the game.
-	if (bInsideImgui)
+	if (IsImGuiDrawing())
 	{
 		CurrentTexture = texture;
 		(*origglBindTexture)(target, texture);
@@ -781,7 +794,7 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 {
 	// ImGui's OpenGL2 backend also draws indexed geometry - pass its draw calls through untouched,
 	// otherwise the menu would get tinted/transparent because of the chams code below.
-	if (bInsideImgui)
+	if (IsImGuiDrawing())
 	{
 		// call original
 		(*origglDrawElements)(mode, count, type, indices);
@@ -1166,8 +1179,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 
 	if (!bImGuiReady)
 	{
-		// ImGui init binds and uploads textures on the game's GL context - keep our hooks out of the way
+		// ImGui init binds and uploads textures on the game's GL context - keep our hooks out of the
+		// way and guard the legacy state while the OpenGL2 backend is brought up.
 		bInsideImgui = true;
+		KUTAQ3_LEGACY_GL_STATE_GUARD();
 
 		HWND hwnd = WindowFromDC(hDC);
 		if (!hwnd) hwnd = GetForegroundWindow();
@@ -1213,24 +1228,38 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		}
 	}
 
-	// build the frame
-	// (ImGui may (re)create its font texture during NewFrame, so the guard stays up for the whole frame)
-	bInsideImgui = true;
-	ImGui_ImplOpenGL2_NewFrame();
-	ImGui_ImplWin32_NewFrame();
-	// Draw ImGui's software cursor only while its menu is visible.
-	ImGui::GetIO().MouseDrawCursor = bMenuShown;
-	ImGui::NewFrame();
+	// Build + render the frame inside the legacy state guard.
+	//
+	// The guard is the fix for the "menu makes the game flicker" problem: the OpenGL2 backend is
+	// the correct renderer for Quake 3's fixed function GL 1.1 context, but it only backs up
+	// GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_TRANSFORM_BIT plus a few glGet's. The multitexture
+	// unit selectors, texture matrices/bindings/enables of units 1+, the client array pointers,
+	// GL_ALPHA_TEST, GL_FOG, the depth/colour write masks and any bound VBO/program are all left
+	// as ImGui set them - and Quake 3 caches those in its own glState shadow, so it only notices
+	// and repairs them on the following frame. That one-frame-wrong / one-frame-right ping pong is
+	// the flicker. Snapshotting the full legacy state here and putting it back below keeps the
+	// game's state machine exactly where it was.
+	//
+	// (ImGui may also (re)create its font texture during NewFrame, so the guard covers the whole
+	// frame, not just RenderDrawData.)
+	{
+		KUTAQ3_LEGACY_GL_STATE_GUARD();
 
-	if (bMenuShown)
-		RenderKutaQ3Menu();
+		ImGui_ImplOpenGL2_NewFrame();
+		ImGui_ImplWin32_NewFrame();
+		// Draw ImGui's software cursor only while its menu is visible.
+		ImGui::GetIO().MouseDrawCursor = bMenuShown;
+		ImGui::NewFrame();
 
-	ImGui::EndFrame();
-	ImGui::Render();
+		if (bMenuShown)
+			RenderKutaQ3Menu();
 
-	// draw the menu on top of the game scene, then let the game swap
-	ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
-	bInsideImgui = false;
+		ImGui::EndFrame();
+		ImGui::Render();
+
+		// draw the menu on top of the game scene, then let the game swap
+		ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+	} // <- guard destructor restores Quake 3's GL state here
 
 	// call original
 	BOOL result = origwglSwapBuffers ? origwglSwapBuffers(hDC) : FALSE;
@@ -1394,7 +1423,11 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 				if (oGameWndProc && IsWindow(g_GameHwnd))
 					SetWindowLongPtr(g_GameHwnd, GWLP_WNDPROC, (LONG_PTR)oGameWndProc);
 				if (wglGetCurrentContext() != NULL) // renderer teardown touches GL - needs a live context
+				{
+					// deleting the font texture touches GL state too - guard it as well
+					KUTAQ3_LEGACY_GL_STATE_GUARD();
 					ImGui_ImplOpenGL2_Shutdown();
+				}
 				ImGui_ImplWin32_Shutdown();
 				ImGui::DestroyContext();
 				bImGuiReady = false;
