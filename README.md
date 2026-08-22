@@ -8,23 +8,35 @@ is rendered on top of the game every frame using Dear ImGui (the bloat-free imme
 GUI for C++) with the fixed-function OpenGL2 backend (`imgui/imgui_impl_opengl2.cpp` +
 `imgui/imgui_impl_opengl2.h`), which fits Quake 3's legacy GL context.
 
-## DirectInput8 mouse routing (in_mouse 1)
+## Legacy DirectInput mouse routing (in_mouse 1)
 
-With its default `in_mouse 1`, Quake 3 reads the mouse through DirectInput8
-(`IDirectInputDevice8`). While that device is acquired (foreground/exclusive) the OS cursor is
-frozen and **no** `WM_MOUSEMOVE` / mouse-button messages reach the game window - DirectInput
-consumes them at the HID level. The ImGui Win32 backend only ever learns about the cursor from
-those window messages, so with the menu open the cursor would be stuck in place. Hooking
-`GetCursorPos` (the `in_mouse -1` Win32 path) is useless here because the game never calls it.
+With its default `in_mouse 1`, retail Quake 3 Arena 1.32 reads the mouse through the **legacy**
+DirectInput path in `dinput.dll`: `LoadLibrary("dinput.dll")` → `DirectInputCreateA` →
+`IDirectInput::CreateDevice(&GUID_SysMouse, ...)` → `IDirectInputDevice`. It is *not* the
+DirectInput8 (`dinput8.dll` / `IDirectInputDevice8`) interface, so a vtable hook on the DirectInput
+8 device interface would never fire. While that legacy device is acquired (foreground/exclusive) the
+OS cursor is frozen and **no** `WM_MOUSEMOVE` / mouse-button messages reach the game window -
+DirectInput consumes them at the HID level. The ImGui Win32 backend only ever learns about the
+cursor from those window messages, so with the menu open the cursor would be stuck in place.
+Hooking `GetCursorPos` (the `in_mouse -1` Win32 path) is useless here because the game never calls
+it.
 
-`dinput8Hook.h` / `dinput8Hook.cpp` solve this by hooking the **device vtable**:
+`dinputHook.h` / `dinputHook.cpp` solve this by hooking the **legacy device vtable**:
 
-- `Install()` resolves `dinput8.dll`, creates a throwaway `IDirectInput8` + system mouse device
-  purely to read the address of the single shared `IDirectInputDevice8` vtable out of it, then
-  patches two entries on it with `VirtualProtect`: `GetDeviceState` (vtable[9]) and `GetDeviceData`
-  (vtable[10]). Patching the shared static vtable reaches the game's own mouse device regardless of
-  when it was created, so it works for both early and late injection. No DirectX SDK headers or
-  `dxguid.lib` are needed - the COM signatures and GUIDs are declared locally.
+- `Install()` resolves `dinput.dll` and `DirectInputCreateA`, then creates throwaway `IDirectInput`
+  + system mouse devices for each legacy `DIRECTINPUT_VERSION` the retail executable may have been
+  compiled against (0x0300 / 0x0500 / 0x05A0 / 0x0700 - `dinput.dll` keeps one static device vtable
+  per interface generation) purely to read the shared vtable addresses out of them. On each distinct
+  vtable it patches three entries with `VirtualProtect`: `GetDeviceState` (vtable[9]),
+  `GetDeviceData` (vtable[10]) and `SetDataFormat` (vtable[11]). Patching the shared static vtables
+  reaches the game's own mouse device regardless of when it was created, so it works for both early
+  and late injection. No DirectX SDK headers or `dxguid.lib` are needed - the COM signatures and
+  GUIDs are declared locally.
+- Unlike DirectInput 8, the legacy device vtable is shared by mouse, keyboard and joystick devices
+  alike. The `SetDataFormat` hook therefore tracks which device instances install a mouse-sized
+  format (16-byte `DIMOUSESTATE` / 20-byte `DIMOUSESTATE2`); only those are routed/suppressed.
+  `GetDeviceState` additionally self-filters on the buffer size, so non-mouse devices are left
+  untouched.
 - While the menu is open, the hooks read the real mouse deltas / wheel / buttons out of the device
   data, route them into ImGui (`AddMousePosEvent` / `AddMouseButtonEvent` / `AddMouseWheelEvent`)
   and then **zero** the data before returning it to Quake 3 - so the game neither looks around nor

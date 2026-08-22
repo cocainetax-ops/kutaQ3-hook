@@ -30,7 +30,7 @@
     <ClCompile Include="glStateGuard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="dinput8Hook.cpp">
+    <ClCompile Include="dinputHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="imgui\imgui.cpp">
@@ -71,7 +71,7 @@
     <ClInclude Include="glStateGuard.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="dinput8Hook.h">
+    <ClInclude Include="dinputHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="imgui\imgui.h">
