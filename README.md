@@ -93,7 +93,10 @@ no shader sniffing). Multitexture / buffer / program entry points are resolved l
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
   - Mouse/keyboard input is captured while the menu is open
-  - No files written to the game folder (`imgui.ini` / `imgui_log.txt` disabled)
+  - **Save settings** / **Load settings** persist cheat options to a dedicated `kutaQ3.cfg`
+    next to the DLL (not `imgui.ini` - that file is only ImGui's own window-layout cache
+    and stays disabled). Settings are also loaded on inject and written on unload.
+  - No ImGui files written to the game folder (`imgui.ini` / `imgui_log.txt` disabled)
 
 ## Building
 
@@ -109,6 +112,27 @@ The output DLL is `Release\kutaQ3.dll`.
 
 Inject `kutaQ3.dll` into `quake3.exe` with your favourite DLL injector. The hooks are installed
 in `DllMain`, the menu appears as soon as the first frame is swapped, and `INSERT` shows/hides it.
+
+Settings use two dedicated files next to the DLL (**not** the game-folder `imgui.ini`):
+
+- `kutaQ3.cfg` — cheat feature toggles (hand-editable).
+- `kutaQ3_imgui.ini` — ImGui window layout via `SaveIniSettingsToMemory` /
+  `LoadIniSettingsFromMemory` (position, size, collapsed flag, table state).
+
+Use **Save settings** / **Load settings** in the menu, or edit `kutaQ3.cfg` by hand:
+
+```
+[Features]
+ChamsEnabled=1
+ChamsStyle=0          ; 0 = solid, 1 = wireframe
+LogShaders=1
+```
+
+A missing file keeps the compiled defaults. Layout is also flushed a few seconds
+after you move/resize/collapse a window, and both files are written on DLL unload.
+
+This ImGui snapshot is **master** (no docking). Dock-space layouts are not stored
+until the docking branch is used; the same `kutaQ3_imgui.ini` path will then include them.
 
 ## Third-party
 

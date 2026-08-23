@@ -9,6 +9,8 @@ x64/
 *.opensdf
 ipch/
 
-# hook runtime logs
+# hook runtime logs / user settings
 log.txt
 *.log
+kutaQ3.cfg
+kutaQ3_imgui.ini
