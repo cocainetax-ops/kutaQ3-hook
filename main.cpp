@@ -18,6 +18,10 @@
 // messages the ImGui Win32 backend relies on never arrive. This hooks the device vtable, feeds the
 // real mouse deltas into ImGui and zeroes them for the game while the menu is up.
 #include "dinputHook.h"
+
+// kutaQ3 hook - dedicated configuration file (kutaQ3.cfg next to the DLL). Cheat settings are
+// NOT stored in imgui.ini; that file is ImGui's own window-layout cache and is left disabled.
+#include "config.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -35,10 +39,8 @@ bool bMenuShown = true;       // menu visibility (INSERT toggles) - shown on fir
 HWND g_GameHwnd = NULL;       // the game window the menu is attached to
 WNDPROC oGameWndProc = NULL;  // the game's original window procedure
 
-// feature toggles exposed in the "kutaQ3 hook" menu
-bool bChamsEnabled = true;    // master toggle for the wallhack chams
-int  iChamsStyle   = 0;       // 0 = solid, 1 = wireframe
-bool bLogShaders   = true;    // log player shader names to log.txt while F10 is held
+// feature toggles exposed in the "kutaQ3 hook" menu live in Config::g_Settings
+// (saved/loaded from kutaQ3.cfg - see config.h)
 // =============================================================================================== //
 
 
@@ -666,7 +668,7 @@ void WINAPI newglBindTexture(GLenum target, GLuint texture)
 		*/ 
 	
 	//the way I logged players for Quake 3
-		if (bLogShaders)
+		if (Config::g_Settings.logShaders)
 		if (GetAsyncKeyState(VK_F10) < 0)
 			if (texture != NULL && Shader != NULL)
 				if (strstr((char*)Shader, "models/players"))
@@ -809,9 +811,9 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 	}
 
 	//chams solid - working
-	if (bChamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
+	if (Config::g_Settings.chamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
 	{
-		if (iChamsStyle == 1)
+		if (Config::g_Settings.chamsStyle == 1)
 		{
 			DrawChamsWireframe(mode, count, type, indices); //wireframe outline behind walls / solid colour infront of walls
 		}
@@ -1109,8 +1111,23 @@ void __stdcall newwglSwapBuffers(HDC hDC)
 // the menu window - called it "kutaQ3 hook"
 void RenderKutaQ3Menu()
 {
-	ImGui::SetNextWindowSize(ImVec2(300, 185), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin("kutaQ3 hook", &bMenuShown, ImGuiWindowFlags_NoCollapse))
+	Config::Settings& cfg = Config::g_Settings;
+
+	// Prefer kutaQ3_imgui.ini (ImGui's own Pos/Size/Collapsed). The old [Menu] keys
+	// in kutaQ3.cfg are only applied once when that imgui file does not exist yet.
+	if (cfg.applyLegacyMenuLayout && cfg.hasLegacyMenuLayout)
+	{
+		ImGui::SetNextWindowPos(ImVec2(cfg.menuX, cfg.menuY), ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(cfg.menuW, cfg.menuH), ImGuiCond_Always);
+		cfg.applyLegacyMenuLayout = false;
+	}
+	else
+	{
+		ImGui::SetNextWindowSize(ImVec2(320, 250), ImGuiCond_FirstUseEver);
+	}
+
+	// Collapse is allowed so ImGui can persist Collapsed=1 in kutaQ3_imgui.ini
+	if (!ImGui::Begin("kutaQ3 hook", &bMenuShown))
 	{
 		ImGui::End();
 		return;
@@ -1119,15 +1136,32 @@ void RenderKutaQ3Menu()
 	ImGui::Text("Quake 3 OpenGL hook");
 	ImGui::Separator();
 
-	ImGui::Checkbox("Chams (wallhack)", &bChamsEnabled);
-	if (bChamsEnabled)
+	ImGui::Checkbox("Chams (wallhack)", &cfg.chamsEnabled);
+	if (cfg.chamsEnabled)
 	{
-		ImGui::RadioButton("Solid", &iChamsStyle, 0);
+		ImGui::RadioButton("Solid", &cfg.chamsStyle, 0);
 		ImGui::SameLine();
-		ImGui::RadioButton("Wireframe", &iChamsStyle, 1);
+		ImGui::RadioButton("Wireframe", &cfg.chamsStyle, 1);
 	}
 
-	ImGui::Checkbox("Log player shaders (F10)", &bLogShaders);
+	ImGui::Checkbox("Log player shaders (F10)", &cfg.logShaders);
+
+	ImGui::Separator();
+	ImGui::Text("Settings");
+	if (ImGui::Button("Save settings", ImVec2(140, 0)))
+		Config::Save();
+	ImGui::SameLine();
+	if (ImGui::Button("Load settings", ImVec2(140, 0)))
+		Config::Load();
+
+	if (Config::LastStatus()[0])
+	{
+		const ImVec4 col = Config::LastStatusOk()
+			? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
+			: ImVec4(0.95f, 0.45f, 0.35f, 1.0f);
+		ImGui::TextColored(col, "%s", Config::LastStatus());
+	}
+	ImGui::TextDisabled("%s  +  %s", Config::kFileName, Config::kImGuiFileName);
 
 	ImGui::Separator();
 	ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Press INSERT to show/hide this menu.");
@@ -1206,8 +1240,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 		ImGuiIO& io = ImGui::GetIO();
-		io.IniFilename = NULL; // don't write imgui.ini next to the game
-		io.LogFilename = NULL; // don't write imgui_log.txt next to the game
+		// Cheat settings: kutaQ3.cfg. Window layout: kutaQ3_imgui.ini via the memory API.
+		// Leave io.IniFilename NULL so ImGui never writes imgui.ini into the game folder.
+		io.IniFilename = NULL;
+		io.LogFilename = NULL;
 		// Cursor flicker fix: Quake 3 hides the OS mouse cursor during gameplay and draws
 		// its own crosshair, while the ImGui Win32 backend would otherwise change the OS
 		// cursor every frame. Leave OS cursor visibility entirely under Quake 3's control.
@@ -1221,6 +1257,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		// subclass the game window so the menu receives mouse/keyboard input
 		oGameWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)kutaQ3WndProc);
 		if (!oGameWndProc) oGameWndProc = DefWindowProc;
+
+		// restore window Pos/Size/Collapsed (and tables) from the dedicated imgui file
+		if (Config::ImGuiFileExists())
+			Config::LoadImGuiLayout();
 
 		bImGuiReady = true;
 		bInsideImgui = false;
@@ -1259,6 +1299,8 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	{
 		KUTAQ3_LEGACY_GL_STATE_GUARD();
 
+		Config::FlushPendingImGuiLoad();
+
 		ImGui_ImplOpenGL2_NewFrame();
 		ImGui_ImplWin32_NewFrame();
 		// Re-queue the DirectInput-routed cursor AFTER the Win32 backend's NewFrame (which would
@@ -1277,6 +1319,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 
 		// draw the menu on top of the game scene, then let the game swap
 		ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+
+		// ImGui's official manual-save hook: persist layout a few seconds after a move/resize/collapse
+		if (ImGui::GetIO().WantSaveIniSettings)
+			Config::SaveImGuiLayout();
 	} // <- guard destructor restores Quake 3's GL state here
 
 	// call original
@@ -1429,12 +1475,18 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 			DisableThreadLibraryCalls(hModule);
 			GetModuleFileName(hModule, dlldir, 512);
 			for (int i = strlen(dlldir); i > 0; i--) { if (dlldir[i] == '\\') { dlldir[i + 1] = 0; break; } }
+			// restore the last session from kutaQ3.cfg (missing file keeps compiled defaults)
+			if (Config::FileExists())
+				Config::Load();
 			HookFunctions();
 			break;
 		}	
 
-	case DLL_PROCESS_DETACH:
+		case DLL_PROCESS_DETACH:
 		{
+			// persist the last session to kutaQ3.cfg even if the user never clicked Save
+			Config::Save();
+
 			// restore the legacy DirectInput device vtables before anything else, so the game
 			// never calls into unmapped hook code once this DLL is freed
 			DInput::Shutdown();

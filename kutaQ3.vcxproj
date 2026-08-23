@@ -168,6 +168,7 @@
     <ClCompile Include="glDraw.cpp" />
     <ClCompile Include="glStateGuard.cpp" />
     <ClCompile Include="dinputHook.cpp" />
+    <ClCompile Include="config.cpp" />
     <ClCompile Include="imgui\imgui.cpp" />
     <ClCompile Include="imgui\imgui_draw.cpp" />
     <ClCompile Include="imgui\imgui_tables.cpp" />
@@ -183,6 +184,7 @@
     <ClInclude Include="glDraw.h" />
     <ClInclude Include="glStateGuard.h" />
     <ClInclude Include="dinputHook.h" />
+    <ClInclude Include="config.h" />
     <ClInclude Include="imgui\imgui.h" />
     <ClInclude Include="imgui\imgui_internal.h" />
     <ClInclude Include="imgui\imconfig.h" />
