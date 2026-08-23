@@ -25,6 +25,77 @@
 // =============================================================================================== //
 
 // =============================================================================================== //
+// kutaQ3 hook - global definitions (the ONLY definitions; main.h declares them as extern)
+//
+// These used to be defined in main.h itself, so every translation unit that included the header
+// (main.cpp AND config.cpp) emitted its own copy -> LNK2005 "already defined in main.obj".
+DWORD Shader = 0;                       // shader
+bool shaderfound = false;
+int CurrentTexture = 0;                 //glbindtexture
+bool free_for_all_player_models = false;
+bool red_team_player_models = false;
+bool blue_team_player_models = false;
+
+glBindTexture_t origglBindTexture = NULL;
+glDrawElements_t origglDrawElements = NULL;
+glVertexPointer_t origglVertexPointer = NULL;
+SwapBuffers_t origwglSwapBuffers = NULL;
+CreateWindowExA_t origCreateWindowExA = NULL;
+LoadLibraryExA_t origLoadLibraryExA = NULL;
+
+char dlldir[320] = { 0 };
+
+char* GetDirectoryFile(char *filename)
+{
+	static char path[320];
+	strcpy_s(path, dlldir);
+	strcat_s(path, filename);
+	return path;
+}
+
+void Log(const char *fmt, ...)
+{
+	if (!fmt)	return;
+
+	char		text[4096];
+	va_list		ap;
+	va_start(ap, fmt);
+	vsprintf_s(text, fmt, ap);
+	va_end(ap);
+
+	ofstream logfile(GetDirectoryFile("log.txt"), ios::app);
+	if (logfile.is_open() && text)	logfile << text << endl;
+	logfile.close();
+}
+
+void ColorOn()
+{
+	glEnable(GL_COLOR_MATERIAL);
+	glDisableClientState(GL_COLOR_ARRAY);
+	if (free_for_all_player_models)
+		glColor4ub(255, 80, 0, 0); //behind walls
+	//else if (blue_team_player_models)
+		//glColor4ub(0, 255, 125, 0); //behind walls
+}
+
+void ColorOff()
+{
+	glEnable(GL_COLOR_MATERIAL);
+	glDisableClientState(GL_COLOR_ARRAY);
+	if (free_for_all_player_models)
+		glColor4ub(255, 0, 0, 0); //infront of walls
+	//else if (blue_team_player_models)
+		//glColor4ub(0, 255, 0, 0); //infront of  walls
+}
+
+void ColorFunc(int r, int g, int b, int a)
+{
+	glDisableClientState(GL_COLOR_ARRAY);
+	glColor4ub(r, g, b, a);
+	glEnable(GL_COLOR_MATERIAL);
+}
+
+// =============================================================================================== //
 // kutaQ3 hook - ImGui menu state
 bool bImGuiReady = false;     // true once the ImGui backends are initialized
 bool bInsideImgui = false;    // true while ImGui is rendering - hooked GL calls must pass straight through
