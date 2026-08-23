@@ -31,43 +31,24 @@ using namespace std; //logfile
 
 
 	
-DWORD Shader; // shader
-bool shaderfound = false;
+	// NOTE: these are only DECLARED here (extern). The single definitions live in main.cpp.
+	// Defining them in this header produced LNK2005 "already defined in main.obj" because
+	// every .cpp that includes main.h (main.cpp, config.cpp) emitted its own copy.
+	extern DWORD Shader; // shader
+	extern bool shaderfound;
 
-//glbindtexture
-int CurrentTexture = 0;
+	//glbindtexture
+	extern int CurrentTexture;
 
-bool free_for_all_player_models;
-bool red_team_player_models;
-bool blue_team_player_models;
+	extern bool free_for_all_player_models;
+	extern bool red_team_player_models;
+	extern bool blue_team_player_models;
 
 
-void ColorOn()
-{
-	glEnable(GL_COLOR_MATERIAL);
-	glDisableClientState(GL_COLOR_ARRAY);
-	if (free_for_all_player_models)
-		glColor4ub(255, 80, 0, 0); //behind walls
-	//else if (blue_team_player_models)
-		//glColor4ub(0, 255, 125, 0); //behind walls
-}
-
-void ColorOff()
-{
-	glEnable(GL_COLOR_MATERIAL);
-	glDisableClientState(GL_COLOR_ARRAY);
-	if (free_for_all_player_models)
-		glColor4ub(255, 0, 0, 0); //infront of walls
-	//else if (blue_team_player_models)
-		//glColor4ub(0, 255, 0, 0); //infront of  walls
-}
-
-void ColorFunc(int r, int g, int b, int a)
-{
-	glDisableClientState(GL_COLOR_ARRAY);
-	glColor4ub(r, g, b, a);
-	glEnable(GL_COLOR_MATERIAL);
-}
+	// declarations only - bodies are defined once in main.cpp
+	void ColorOn();
+	void ColorOff();
+	void ColorFunc(int r, int g, int b, int a);
 
 
 // =============================================================================================== //
@@ -103,40 +84,20 @@ typedef HMODULE(WINAPI *LoadLibraryExA_t) (
 
 
 
-glBindTexture_t origglBindTexture;
-glDrawElements_t origglDrawElements;
-glVertexPointer_t origglVertexPointer;
-SwapBuffers_t origwglSwapBuffers;
-CreateWindowExA_t origCreateWindowExA;
-LoadLibraryExA_t origLoadLibraryExA;
+extern glBindTexture_t origglBindTexture;
+extern glDrawElements_t origglDrawElements;
+extern glVertexPointer_t origglVertexPointer;
+extern SwapBuffers_t origwglSwapBuffers;
+extern CreateWindowExA_t origCreateWindowExA;
+extern LoadLibraryExA_t origLoadLibraryExA;
 
 // =============================================================================================== //
 
 
-// getdir & log
-char dlldir[320];
-char* GetDirectoryFile(char *filename)
-{
-	static char path[320];
-	strcpy_s(path, dlldir);
-	strcat_s(path, filename);
-	return path;
-}
-
-void Log(const char *fmt, ...)
-{
-	if (!fmt)	return;
-
-	char		text[4096];
-	va_list		ap;
-	va_start(ap, fmt);
-	vsprintf_s(text, fmt, ap);
-	va_end(ap);
-
-	ofstream logfile(GetDirectoryFile("log.txt"), ios::app);
-	if (logfile.is_open() && text)	logfile << text << endl;
-	logfile.close();
-}
+// getdir & log - declarations only. Single definitions live in main.cpp
+extern char dlldir[320];
+char* GetDirectoryFile(char *filename);
+void Log(const char *fmt, ...);
 
 
 /*
