@@ -1060,120 +1060,7 @@ void APIENTRY newglVertexPointer(GLint size, GLenum type, GLsizei stride, const 
 
 // =============================================================================================== //
 
-
-/*
-//this swapbuffers code kind of works but makes game crash when pressing escape key to open Quake 3 menu when in gameplay.
-bool contextCreated = false;
-HGLRC myContext;
-HGLRC gameContext;
-HGLRC oldContext;
-
-
-void __stdcall newwglSwapBuffers(HDC hDC)
-{
-
-	//Save the games context
-	gameContext = wglGetCurrentContext();
-
-	//Create our own context if it hasn't been created yet
-	if (contextCreated == false)
-	{
-		//Create new context
-		myContext = wglCreateContext(hDC);
-
-		//Make thread use our context
-		wglMakeCurrent(hDC, myContext);
-
-
-		//Setup our context
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrtho(0.0, 1600, 1200, 0.0, 1.0, -1.0);  //might want to make these your actual screen resolution
-		glMatrixMode(GL_MODELVIEW);
-		glLoadIdentity();
-		glClearColor(0, 0, 0, 1.0);
-	}
-
-	//Make thread use our context
-	wglMakeCurrent(hDC, myContext);
-
-
-	//Draw something (a rectangle here)
-	glColor3f(1.0f, 0, 0);
-	glBegin(GL_QUADS);
-	glVertex2f(0, 190.0f);
-	glVertex2f(100.0f, 190.0f);
-	glVertex2f(100.0f, 290.0f);
-	glVertex2f(0, 290.0f);
-	glEnd();
-	
-
-
-	//Make thread to use games context again
-	//wglMakeCurrent(hDC, oldContext);
-	wglMakeCurrent(hDC, gameContext);
-
-
-	origwglSwapBuffers(hDC);
-}
-*/
-
-
-
-
-/*
-void __stdcall newwglSwapBuffers(HDC hDC) 
-{
-	
-	void initialise_draw_text();
-	{
-		GL::Font glFont;
-
-		HDC currentHDC = wglGetCurrentDC();
-
-		if (!glFont.bBuilt || currentHDC != glFont.hdc)
-		{
-			glFont.Build(FONT_HEIGHT);
-		}
-		
-
-		GL::SetupOrtho();
-	
-		
-		//Draw here
-		glFont.Print(100, 100, rgb::red, "Jesus Loves You All");
-		GL::DrawFilledRect(300, 300, 200, 200, rgb::red);
-		GL::DrawOutline(550, 400, 200, 200, 1, rgb::green);
-
-
-
-	glBegin(GL_LINES);
-	glVertex2i(0, 0);
-	glVertex2i(500, 500);
-	glEnd();
-
-
-	glBegin(GL_LINES);
-	glColor3f(1.0f, 0.0f, 0.0f); // RGB value
-	glVertex2f(0, 0); // Line Origin (top left)
-	glVertex2f(800, 600); // Line end
-	glEnd();
-	
-
-
-	  //End draw here
-	GL::RestoreGL();
-}
-	
-	
-
-	// call original
-	origwglSwapBuffers(hDC);
-}
-*/
-
-
-
+ 
 
 // so far below working great USE BELOW!!!
 // =============================================================================================== //
@@ -1395,6 +1282,57 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		if (ImGui::GetIO().WantSaveIniSettings)
 			Config::SaveImGuiLayout();
 	} // <- guard destructor restores Quake 3's GL state here
+
+
+	  // =============================================================================================== //
+	  // Start of openGL draw text // lines // Boxes examples
+	  // =============================================================================================== //
+	  /* 
+	void initialise_draw_text();
+	{
+		GL::Font glFont;
+
+		HDC currentHDC = wglGetCurrentDC();
+
+		if (!glFont.bBuilt || currentHDC != glFont.hdc)
+		{
+			glFont.Build(FONT_HEIGHT);
+		}
+
+
+		GL::SetupOrtho();
+
+
+		//Draw here
+		glFont.Print(100, 100, rgb::red, "Jesus Loves You All");
+		GL::DrawFilledRect(300, 300, 200, 200, rgb::red);
+		GL::DrawOutline(550, 400, 200, 200, 1, rgb::green);
+
+
+
+		glBegin(GL_LINES);
+		glVertex2i(0, 0);
+		glVertex2i(500, 500);
+		glEnd();
+
+
+		glBegin(GL_LINES);
+		glColor3f(1.0f, 0.0f, 0.0f); // RGB value
+		glVertex2f(0, 0); // Line Origin (top left)
+		glVertex2f(800, 600); // Line end
+		glEnd();
+
+
+
+		//End draw here
+		GL::RestoreGL();
+	}
+	*/
+
+	// =============================================================================================== //
+	// End of openGL draw text // lines // Boxes examples
+	// =============================================================================================== //
+	
 
 	// call original
 	BOOL result = origwglSwapBuffers ? origwglSwapBuffers(hDC) : FALSE;
