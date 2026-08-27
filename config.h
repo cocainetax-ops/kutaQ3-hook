@@ -31,7 +31,6 @@ namespace Config
 	{
 		bool chamsEnabled;
 		int  chamsStyle;      // 0 = solid, 1 = wireframe
-		int  chamsGlowStyle;   // 0 = original, 1 = bright, 2 = halo, 3 = neon
 		bool logShaders;
 
 		// optional one-shot fallback if an older kutaQ3.cfg had a [Menu] section
