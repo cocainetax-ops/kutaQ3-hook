@@ -21,6 +21,9 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="neonChams.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="glText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -57,6 +60,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="main.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="neonChams.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="detver.h">

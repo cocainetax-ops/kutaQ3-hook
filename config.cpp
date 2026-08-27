@@ -18,6 +18,7 @@ void Config::ResetToDefaults(Settings& s)
 {
 	s.chamsEnabled           = true;
 	s.chamsStyle             = 0;
+	s.neonEnabled            = false;
 	s.logShaders             = true;
 	s.hasLegacyMenuLayout    = false;
 	s.menuX                  = 60.0f;
@@ -174,6 +175,7 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 			return;
 		}
 		if (EqualsNoCase(key, "LogShaders")) { ParseBool(value, s.logShaders); return; }
+		if (EqualsNoCase(key, "NeonEnabled")) { ParseBool(value, s.neonEnabled); return; }
 	}
 
 	// legacy [Menu] from the first save/load revision - only used if kutaQ3_imgui.ini is missing
@@ -279,6 +281,7 @@ bool Config::Save()
 	file << "[Features]\n";
 	file << "ChamsEnabled=" << (s.chamsEnabled ? 1 : 0) << "\n";
 	file << "ChamsStyle=" << s.chamsStyle << "          ; 0 = solid, 1 = wireframe\n";
+	file << "NeonEnabled=" << (s.neonEnabled ? 1 : 0) << "        ; 1 = neon bloom chams override the style above\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
 	file.close();
 
