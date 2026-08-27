@@ -822,203 +822,6 @@ void DrawChamsSolid(GLenum mode, GLsizei count, GLenum type, const GLvoid *indic
 	}
 }
 
-
-// GLOW VARIATION 1: Brighter / stronger colors (solid + wireframe)
-void DrawChamsSolidGlowBright(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	if (free_for_all_player_models)
-	{
-		TransChams(255, 50, 255, 200, 20, 255, 60, 255, mode, count, type, indices);
-	}
-	else if (blue_team_player_models)
-	{
-		TransChams(255, 255, 255, 200, 20, 200, 255, 255, mode, count, type, indices);
-	}
-	else if (red_team_player_models)
-	{
-		TransChams(255, 140, 0, 255, 255, 30, 0, 255, mode, count, type, indices);
-	}
-}
-
-void DrawChamsWireframeGlowBright(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	glPushMatrix();
-	DisableDepthTest();
-	glDisable(GL_TEXTURE_2D);
-	ColorFunc(0, 0, 0, 255);
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-	glEnable(GL_POLYGON_OFFSET_LINE);
-	glEnable(GL_LINE_LOOP);
-	glLineWidth(4.0);
-	glPolygonMode(GL_FRONT, GL_LINE);
-	glEnable(GL_CULL_FACE);
-	glCullFace(GL_BACK);
-	if (free_for_all_player_models)
-		glColor4ub(255, 80, 255, 255);
-	else if (red_team_player_models)
-		glColor4ub(255, 140, 0, 255);
-	else if (blue_team_player_models)
-		glColor4ub(255, 255, 255, 255);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_DEPTH_TEST);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glScalef(1, 1, 1);
-	if (free_for_all_player_models)
-		glColor4ub(80, 255, 80, 255);
-	else if (red_team_player_models)
-		glColor4ub(255, 30, 0, 255);
-	else if (blue_team_player_models)
-		glColor4ub(30, 220, 255, 255);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glScalef(0.99, 1.01, 1.0);
-	EnableDepthTest();
-	origglDrawElements(mode, count, type, indices);
-	ColorFunc(20, 20, 20, 120);
-	glPopMatrix();
-}
-
-// GLOW VARIATION 2: Soft halo / bloom glow
-void DrawChamsSolidGlowHalo(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	glPushMatrix();
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-	TransColorFunc(255, 100, 255, 140);
-	origglDrawElements(mode, count, type, indices);
-	glPopMatrix();
-
-	if (free_for_all_player_models)
-		TransChams(255, 0, 255, 130, 30, 250, 30, 255, mode, count, type, indices);
-	else if (blue_team_player_models)
-		TransChams(255, 255, 255, 130, 30, 250, 30, 255, mode, count, type, indices);
-	else if (red_team_player_models)
-		TransChams(255, 80, 0, 200, 30, 250, 0, 255, mode, count, type, indices);
-}
-
-void DrawChamsWireframeGlowHalo(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	glPushMatrix();
-	DisableDepthTest();
-	glDisable(GL_TEXTURE_2D);
-	ColorFunc(0, 0, 0, 255);
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-	glEnable(GL_POLYGON_OFFSET_LINE);
-	glEnable(GL_LINE_LOOP);
-	glLineWidth(3.0);
-	glPolygonMode(GL_FRONT, GL_LINE);
-	glEnable(GL_CULL_FACE);
-	glCullFace(GL_BACK);
-	if (free_for_all_player_models)
-		glColor4ub(255, 60, 255, 220);
-	else if (red_team_player_models)
-		glColor4ub(255, 100, 0, 220);
-	else if (blue_team_player_models)
-		glColor4ub(255, 255, 255, 220);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_DEPTH_TEST);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glScalef(1, 1, 1);
-	if (free_for_all_player_models)
-		glColor4ub(60, 255, 60, 230);
-	else if (red_team_player_models)
-		glColor4ub(255, 40, 0, 230);
-	else if (blue_team_player_models)
-		glColor4ub(40, 240, 255, 230);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glScalef(0.99, 1.01, 1.0);
-	EnableDepthTest();
-	origglDrawElements(mode, count, type, indices);
-	ColorFunc(20, 20, 20, 120);
-	glPopMatrix();
-}
-
-// GLOW VARIATION 3: Neon glow (bright outlines + glowing wireframe)
-void DrawChamsSolidGlowNeon(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	if (free_for_all_player_models)
-	{
-		TransChams(255, 0, 255, 160, 255, 0, 255, 255, mode, count, type, indices);
-	}
-	else if (blue_team_player_models)
-	{
-		TransChams(255, 255, 255, 160, 0, 255, 255, 255, mode, count, type, indices);
-	}
-	else if (red_team_player_models)
-	{
-		TransChams(255, 140, 0, 255, 255, 60, 0, 255, mode, count, type, indices);
-	}
-}
-
-void DrawChamsWireframeGlowNeon(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
-{
-	glPushMatrix();
-	DisableDepthTest();
-	glDisable(GL_TEXTURE_2D);
-	ColorFunc(0, 0, 0, 255);
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-	glEnable(GL_POLYGON_OFFSET_LINE);
-	glEnable(GL_LINE_LOOP);
-	glLineWidth(5.0);
-	glPolygonMode(GL_FRONT, GL_LINE);
-	glEnable(GL_CULL_FACE);
-	glCullFace(GL_BACK);
-	if (free_for_all_player_models)
-		glColor4ub(255, 0, 255, 255);
-	else if (red_team_player_models)
-		glColor4ub(255, 140, 0, 255);
-	else if (blue_team_player_models)
-		glColor4ub(255, 255, 255, 255);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_DEPTH_TEST);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glScalef(1, 1, 1);
-	if (free_for_all_player_models)
-		glColor4ub(255, 20, 255, 255);
-	else if (red_team_player_models)
-		glColor4ub(255, 20, 20, 255);
-	else if (blue_team_player_models)
-		glColor4ub(20, 255, 255, 255);
-	origglDrawElements(mode, count, type, indices);
-
-	glEnable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glScalef(0.99, 1.01, 1.0);
-	EnableDepthTest();
-	origglDrawElements(mode, count, type, indices);
-	ColorFunc(20, 20, 20, 120);
-	glPopMatrix();
-
-	glPushMatrix();
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_TEXTURE_2D);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-	glLineWidth(8.0);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	if (free_for_all_player_models)
-		glColor4ub(255, 60, 255, 80);
-	else if (red_team_player_models)
-		glColor4ub(255, 100, 0, 80);
-	else if (blue_team_player_models)
-		glColor4ub(255, 255, 255, 80);
-	origglDrawElements(mode, count, type, indices);
-	glPopMatrix();
-}
-
 // wireframe chams: wireframe outline behind walls + solid colour in front of walls
 void DrawChamsWireframe(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
@@ -1081,28 +884,13 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 	//chams solid - working
 	if (Config::g_Settings.chamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
 	{
-		int glow = Config::g_Settings.chamsGlowStyle;
 		if (Config::g_Settings.chamsStyle == 1)
 		{
-			// wireframe
-			switch (glow)
-			{
-			case 1: DrawChamsWireframeGlowBright(mode, count, type, indices); break;
-			case 2: DrawChamsWireframeGlowHalo(mode, count, type, indices); break;
-			case 3: DrawChamsWireframeGlowNeon(mode, count, type, indices); break;
-			default: DrawChamsWireframe(mode, count, type, indices); break;
-			}
+			DrawChamsWireframe(mode, count, type, indices); //wireframe outline behind walls / solid colour infront of walls
 		}
 		else
 		{
-			// solid
-			switch (glow)
-			{
-			case 1: DrawChamsSolidGlowBright(mode, count, type, indices); break;
-			case 2: DrawChamsSolidGlowHalo(mode, count, type, indices); break;
-			case 3: DrawChamsSolidGlowNeon(mode, count, type, indices); break;
-			default: DrawChamsSolid(mode, count, type, indices); break;
-			}
+			DrawChamsSolid(mode, count, type, indices); //solid colour behind walls / solid colour infront of walls
 		}
 	}
 	else
@@ -1317,21 +1105,6 @@ void RenderKutaQ3Menu()
 				ImGui::RadioButton("Solid", &cfg.chamsStyle, 0);
 				ImGui::SameLine();
 				ImGui::RadioButton("Wireframe", &cfg.chamsStyle, 1);
-				ImGui::Separator();
-				const char* glowLabels[] = { "Original", "Bright Neon", "Soft Halo", "Neon Glow" };
-				if (ImGui::BeginCombo("Glow Style", glowLabels[cfg.chamsGlowStyle]))
-				{
-					for (int i = 0; i < 4; i++)
-					{
-						bool selected = (cfg.chamsGlowStyle == i);
-						if (ImGui::Selectable(glowLabels[i], selected))
-						{
-							cfg.chamsGlowStyle = i;
-						}
-						if (selected) ImGui::SetItemDefaultFocus();
-					}
-					ImGui::EndCombo();
-				}
 			}
 			ImGui::EndTabItem();
 		}
