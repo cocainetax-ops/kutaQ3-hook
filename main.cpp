@@ -1094,15 +1094,27 @@ void RenderKutaQ3Menu()
 	ImGui::Text("Quake 3 OpenGL hook");
 	ImGui::Separator();
 
-	ImGui::Checkbox("Chams (wallhack)", &cfg.chamsEnabled);
-	if (cfg.chamsEnabled)
+	// Tab bar: VISUAL | EXTRAS
+	if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None))
 	{
-		ImGui::RadioButton("Solid", &cfg.chamsStyle, 0);
-		ImGui::SameLine();
-		ImGui::RadioButton("Wireframe", &cfg.chamsStyle, 1);
+		if (ImGui::BeginTabItem("VISUAL"))
+		{
+			ImGui::Checkbox("Chams (wallhack)", &cfg.chamsEnabled);
+			if (cfg.chamsEnabled)
+			{
+				ImGui::RadioButton("Solid", &cfg.chamsStyle, 0);
+				ImGui::SameLine();
+				ImGui::RadioButton("Wireframe", &cfg.chamsStyle, 1);
+			}
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("EXTRAS"))
+		{
+			ImGui::Checkbox("Log player shaders (F10)", &cfg.logShaders);
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
 	}
-
-	ImGui::Checkbox("Log player shaders (F10)", &cfg.logShaders);
 
 	ImGui::Separator();
 	ImGui::Text("Settings");
