@@ -18,6 +18,7 @@ void Config::ResetToDefaults(Settings& s)
 {
 	s.chamsEnabled           = true;
 	s.chamsStyle             = 0;
+	s.chamsGlowStyle         = 0;
 	s.logShaders             = true;
 	s.hasLegacyMenuLayout    = false;
 	s.menuX                  = 60.0f;
@@ -173,6 +174,17 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 			}
 			return;
 		}
+		if (EqualsNoCase(key, "ChamsGlowStyle"))
+		{
+			int glow = s.chamsGlowStyle;
+			if (ParseInt(value, glow))
+			{
+				if (glow < 0) glow = 0;
+				if (glow > 3) glow = 3;
+				s.chamsGlowStyle = glow;
+			}
+			return;
+		}
 		if (EqualsNoCase(key, "LogShaders")) { ParseBool(value, s.logShaders); return; }
 	}
 
@@ -279,6 +291,7 @@ bool Config::Save()
 	file << "[Features]\n";
 	file << "ChamsEnabled=" << (s.chamsEnabled ? 1 : 0) << "\n";
 	file << "ChamsStyle=" << s.chamsStyle << "          ; 0 = solid, 1 = wireframe\n";
+	file << "ChamsGlowStyle=" << s.chamsGlowStyle << "     ; 0 = original, 1 = bright, 2 = halo, 3 = neon\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
 	file.close();
 
