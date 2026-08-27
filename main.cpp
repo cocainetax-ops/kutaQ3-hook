@@ -22,6 +22,11 @@
 // kutaQ3 hook - dedicated configuration file (kutaQ3.cfg next to the DLL). Cheat settings are
 // NOT stored in imgui.ini; that file is ImGui's own window-layout cache and is left disabled.
 #include "config.h"
+
+// kutaQ3 hook - "Neon" player chams (see neonChams.h).
+// Separate feature on top of the player-model detection: intense additive-blended neon glow with
+// a through-walls bloom halo, toggled from the VISUALS tab with the "Neon" button.
+#include "neonChams.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -882,7 +887,14 @@ void WINAPI newglDrawElements(GLenum mode, GLsizei count, GLenum type, const GLv
 	}
 
 	//chams solid - working
-	if (Config::g_Settings.chamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
+	// "Neon" bloom chams are a separate feature but run on the same player-model detection. They
+	// take priority over the classic styles while enabled, so the two never stack their extra
+	// draw passes on top of each other for the same model.
+	if (Config::g_Settings.neonEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
+	{
+		Neon::DrawChams(mode, count, type, indices); //additive neon glow + bloom halo through walls
+	}
+	else if (Config::g_Settings.chamsEnabled && (free_for_all_player_models || red_team_player_models || blue_team_player_models))
 	{
 		if (Config::g_Settings.chamsStyle == 1)
 		{
@@ -1081,7 +1093,7 @@ void RenderKutaQ3Menu()
 	}
 	else
 	{
-		ImGui::SetNextWindowSize(ImVec2(320, 250), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowSize(ImVec2(320, 300), ImGuiCond_FirstUseEver);
 	}
 
 	// Collapse is allowed so ImGui can persist Collapsed=1 in kutaQ3_imgui.ini
@@ -1106,6 +1118,32 @@ void RenderKutaQ3Menu()
 				ImGui::SameLine();
 				ImGui::RadioButton("Wireframe", &cfg.chamsStyle, 1);
 			}
+
+			ImGui::Spacing();
+
+			// Neon bloom chams - separate feature (neonChams.h), toggled with its own button.
+			// While it is on it takes priority over the Solid/Wireframe styles above.
+			if (cfg.neonEnabled)
+			{
+				// lit-up neon tube look while the feature is active
+				ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.00f, 0.85f, 0.95f, 0.55f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.10f, 1.00f, 1.00f, 0.80f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.60f, 1.00f, 1.00f, 1.00f));
+				ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.05f, 0.12f, 0.14f, 1.00f));
+			}
+			if (ImGui::Button("Neon", ImVec2(140, 0)))
+				cfg.neonEnabled = !cfg.neonEnabled;
+			if (cfg.neonEnabled)
+				ImGui::PopStyleColor(4);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Intense neon brightness bloom on player models:\nadditive glow halo through walls + white-hot core.\nOverrides Solid/Wireframe while enabled.");
+
+			ImGui::SameLine();
+			if (cfg.neonEnabled)
+				ImGui::TextColored(ImVec4(0.10f, 1.00f, 1.00f, 1.00f), "bloom ON");
+			else
+				ImGui::TextDisabled("bloom OFF");
+
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("EXTRAS"))

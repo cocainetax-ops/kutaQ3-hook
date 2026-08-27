@@ -89,6 +89,13 @@ no shader sniffing). Multitexture / buffer / program entry points are resolved l
 - Chams (wallhack) on player models - FFA, red team and blue team models
   - Solid style (flat colour behind walls / flat colour in front of walls)
   - Wireframe style (wireframe outline behind walls / solid colour in front of walls)
+- **Neon** bloom chams (`neonChams.h`) - a separate feature on the same player-model detection.
+  Toggled with the **Neon** button in the VISUALS tab. Three slightly inflated silhouette passes
+  are drawn with the depth test off and **additive blending** (`GL_SRC_ALPHA, GL_ONE`), so the
+  layered passes accumulate into an intense neon brightness halo that bleeds through walls, topped
+  by a white-hot depth-tested core. A `timeGetTime()` pulse makes the glow breathe. Fixed-function
+  GL 1.1 has no shaders/FBOs, so this additive over-draw trick is the era-correct "bloom".
+  While enabled it overrides the Solid/Wireframe styles (`NeonEnabled` in `kutaQ3.cfg`).
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
