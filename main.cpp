@@ -1131,7 +1131,7 @@ void RenderKutaQ3Menu()
 				ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.60f, 1.00f, 1.00f, 1.00f));
 				ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.05f, 0.12f, 0.14f, 1.00f));
 			}
-			if (ImGui::Button("Neon", ImVec2(140, 0)))
+			if (ImGui::Button("Neon (OpenGL)", ImVec2(140, 0)))
 				cfg.neonEnabled = !cfg.neonEnabled;
 			if (cfg.neonEnabled)
 				ImGui::PopStyleColor(4);
