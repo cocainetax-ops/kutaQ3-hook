@@ -119,6 +119,35 @@ WNDPROC oGameWndProc = NULL;  // the game's original window procedure
 // (saved/loaded from kutaQ3.cfg - see config.h)
 // =============================================================================================== //
 
+// kutaQ3 hook - ImGui renderer lifetime across Quake 3 GL context resets
+static HGLRC g_LastGLContext = NULL;
+
+// The OpenGL2 backend stores the menu's font atlas as a GL texture created on whatever context is
+// current when the texture is first uploaded. Quake 3's vid_restart destroys that context and
+// creates a fresh one, but the backend keeps the old texture id. On the new context that id no
+// longer refers to the font atlas (and may even refer to a game texture), so ImGui samples an
+// invalid texture and draws the glyphs as the classic solid white blocks.
+//
+// Drop every GPU-side texture id owned by ImGui and mark the atlas textures for recreation. The
+// next ImGui_ImplOpenGL2_RenderDrawData() call uploads them again on the current context.
+static void ImGuiInvalidateRendererTexturesForNewContext()
+{
+	ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+	for (ImTextureData* tex : platform_io.Textures)
+	{
+		if (tex == NULL)
+			continue;
+
+		// Clear the backend identifiers first: a texture in _WantCreate state is required to have
+		// TexID == ImTextureID_Invalid and BackendUserData == NULL.
+		tex->SetTexID(ImTextureID_Invalid);
+		tex->BackendUserData = NULL;
+
+		// The CPU atlas pixels are still alive. Ask the renderer to re-upload them on the
+		// current context instead of drawing with the stale id from the old context.
+		tex->SetStatus(ImTextureStatus_WantCreate);
+	}
+}
 
 void WINAPI newglBindTexture(GLenum target, GLuint texture)
 {
@@ -1270,14 +1299,20 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 		if (Config::ImGuiFileExists())
 			Config::LoadImGuiLayout();
 
+		g_LastGLContext = wglGetCurrentContext();
 		bImGuiReady = true;
 		bInsideImgui = false;
 	}
 	else
 	{
-		// the game may recreate its window (e.g. vid_restart) - rebind the input backend then
+		// the game may recreate its window and/or GL context (e.g. vid_restart) -
+		// rebind the input backend and make ImGui re-upload its font texture on the new context.
+		HGLRC currentGlContext = wglGetCurrentContext();
 		HWND hwnd = WindowFromDC(hDC);
-		if (hwnd && hwnd != g_GameHwnd)
+		bool bWindowChanged = (hwnd != NULL && hwnd != g_GameHwnd);
+		bool bGlContextChanged = (currentGlContext != NULL && currentGlContext != g_LastGLContext);
+
+		if (bWindowChanged)
 		{
 			if (oGameWndProc && IsWindow(g_GameHwnd))
 				SetWindowLongPtr(g_GameHwnd, GWLP_WNDPROC, (LONG_PTR)oGameWndProc);
@@ -1288,6 +1323,19 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 			oGameWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)kutaQ3WndProc);
 			bInsideImgui = false;
 		}
+
+		// vid_restart recreates the GL context. The font atlas texture was created on the old
+		// context, so its GL id is stale on the new one and ImGui draws the glyphs as solid white
+		// blocks. Force every ImGui texture to be recreated before this frame renders the menu.
+		if (bWindowChanged || bGlContextChanged)
+		{
+			bInsideImgui = true;
+			ImGuiInvalidateRendererTexturesForNewContext();
+			bInsideImgui = false;
+		}
+
+		if (currentGlContext != NULL)
+			g_LastGLContext = currentGlContext;
 	}
 
 	// Build + render the frame inside the legacy state guard.
