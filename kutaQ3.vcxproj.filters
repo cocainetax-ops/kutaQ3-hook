@@ -24,6 +24,15 @@
     <ClCompile Include="neonChams.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="cgameHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="nameEspCore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="nameEsp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="glText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -63,6 +72,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="neonChams.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="q3sdk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cgameHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="nameEsp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="detver.h">

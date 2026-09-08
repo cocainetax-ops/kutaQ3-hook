@@ -22,9 +22,18 @@ the 1.32b binary this hook injects into. `UPSTREAM-README.txt` is id's own
 release note.
 
 **GPL v2 obligations.** These files are copied verbatim, so `COPYING.txt` must
-travel with them and any derivative of them stays GPL. The two `cl_sdk*.c`
+travel with them and any derivative of them stays GPL. The three `cl_sdk*`
 harness files are kutaQ3 additions that only `#include` the engine headers and
-print facts about them; they contain no id code.
+print or check facts about them; they contain no id code.
+
+That distinction is what makes `../q3sdk.h` possible: the hook needs the layouts
+of the structures that cross the cgame <-> engine boundary, but compiling these
+headers into the DLL would relicense the whole hook. So `q3sdk.h` transcribes
+the handful it needs by hand, and `code/client/cl_sdkmirror.cpp` includes both
+`q3sdk.h` and the real headers here and `static_assert`s that every mirrored
+size, offset and syscall number agrees. Reading the headers to learn a layout
+and hard-coding it is the judgement call this repo makes; the harness is what
+keeps the result honest.
 
 Nothing under `SDK/` is referenced by `kutaQ3.vcxproj` — that project lists its
 sources explicitly, with no wildcards — so the SDK is inert as far as the DLL
@@ -36,8 +45,9 @@ code in, but that is a judgement call to make deliberately, not by accident.
 
 ## What is here and why
 
-22 headers and 12 `.c` files — 8 engine sources that compile anywhere, 2 win32
-sources kept as reference, and the 2 kutaQ3 layout harnesses. The directory
+22 headers, 12 `.c` files and 1 `.cpp` — 8 engine sources that compile
+anywhere, 2 win32 sources kept as reference, and the 3 kutaQ3 layout harnesses.
+The directory
 layout under `code/` is upstream's own — do not flatten it, because the engine
 headers `#include` each other by relative path (`"../game/q_shared.h"`).
 
@@ -63,7 +73,16 @@ headers `#include` each other by relative path (`"../game/q_shared.h"`).
 includes the shared, renderer, ui and cgame public headers. `keys.h` +
 `snd_public.h` come with it. `cl_cgame.c` is **the** file for understanding the
 client ↔ cgame boundary — it contains `CL_CgameSystemCalls()`, the table the
-engine answers cgame syscalls through.
+engine answers cgame syscalls through. It also shows `CL_CgameSystemCalls()`'
+real 1.32 signature — `int CL_CgameSystemCalls( int *args )`, not varargs — and
+`VMA(x)` / `VMF(x)`, which is how the hook's mirrored syscall numbers were
+checked. `cl_sdkmirror.cpp` is the third harness: it includes `../../../q3sdk.h`
+alongside these headers and `static_assert`s that the hook's hand-written mirror
+of `snapshot_t` / `playerState_t` / `entityState_t` / `gameState_t` / `usercmd_t`
+and of the cgame syscall and command enums still matches. Unlike the other two it
+prints nothing interesting — its value is that it fails to *compile* when the
+mirror drifts. It is a `.cpp` because the mirror lives in `namespace q3`, which
+is what lets one translation unit see both sets of type names.
 
 ### `code/cgame/` — the client game module
 `cg_local.h` defines `cg_t` (117 fields: the cgame's entire per-frame world),
@@ -135,6 +154,12 @@ code\client\cl_sdkcgstate.c       cl /nologo /W3 code\client\cl_sdkclstate.c /Fe
                               MinGW-w64 / gcc:
                                   gcc -m32 -o cl_sdkclstate code/client/cl_sdkclstate.c
                                   gcc -m32 -o cl_sdkcgstate code/client/cl_sdkcgstate.c
+
+code\client\cl_sdkmirror.cpp  MSVC:
+                                  cl /nologo /W3 /TP /EHsc code\client\cl_sdkmirror.cpp /Fe:cl_sdkmirror.exe
+                              g++ (64-bit is fine here, see below):
+                                  g++ -std=c++11 -o cl_sdkmirror code/client/cl_sdkmirror.cpp
+                              or simply: make -C ../tests check
 ```
 
 Both programs refuse quietly: they print a warning banner whenever
@@ -167,7 +192,13 @@ root):
 - **All 8 engine `.c` files compile clean:** `q_shared.c`, `q_math.c`,
   `bg_lib.c`, `bg_pmove.c`, `bg_misc.c`, `bg_slidemove.c`, `cl_cgame.c`,
   `cg_main.c`.
-- **Both harness programs compile, link and run.**
+- **Both `.c` harness programs compile, link and run.**
+- **`cl_sdkmirror.cpp` compiles and runs, and every mirrored size, offset and
+  syscall number in `../q3sdk.h` matches these headers** (gcc 12.2, x86-64). This
+  one is ABI-independent even on a 64-bit host: nothing in `q3sdk.h` contains a
+  pointer or a `long`, only `int` / `byte` / `char` / `float` arrays, so the
+  layouts it mirrors are the same on ILP32 and LP64. `q3sdk.h` ends with a
+  `static_assert` that keeps that true.
 - `win_input.c` / `win_wndproc.c` fail with `fatal error: windows.h` — expected,
   they are reference-only off Windows.
 - The header closure is complete: every `#include "..."` in the 22 headers

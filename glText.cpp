@@ -1,6 +1,5 @@
 
-#pragma once
-#include "gltext.h"
+#include "glText.h"
 
 
 
@@ -8,16 +7,50 @@
 
 void GL::Font::Build(int height)
 {
+	// Rebuilding (Quake 3 destroys the GL context on vid_restart) throws away the previous face.
+	// The old display list range is deliberately NOT glDeleteLists'd here: after a context switch
+	// the stale base no longer belongs to this context, and deleting that range could destroy
+	// Quake 3's own lists. Leaking 96 list ids per vid_restart is the cheaper mistake.
+	if (hFont)
+	{
+		DeleteObject(hFont);
+		hFont = nullptr;
+	}
+
 	hdc = wglGetCurrentDC();
 	base = glGenLists(96);
-	HFONT hFont = CreateFontA(-(height), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Calibri");
+	if (!hdc || !base)
+	{
+		bBuilt = false;
+		return;
+	}
+
+	m_height = height;
+	hFont = CreateFontA(-(height), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Calibri");
 	//HFONT hFont = CreateFontA(-(height), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Consolas");
 	HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
 	wglUseFontBitmaps(hdc, 32, 96, base);
 	SelectObject(hdc, hOldFont);
-	DeleteObject(hFont);
+
+	// hFont stays alive: TextWidth() measures strings with this exact face.
 
 	bBuilt = true;
+}
+
+
+//width in pixels of text rendered in this font - GDI measures it with the same face
+//wglUseFontBitmaps baked the display lists from, so this matches what glCallLists advances by
+float GL::Font::TextWidth(const char *text)
+{
+	if (!bBuilt || !hdc || !hFont || !text || !text[0])
+		return 0.0f;
+
+	HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+	SIZE size = { 0, 0 };
+	GetTextExtentPoint32A(hdc, text, (int)strlen(text), &size);
+	SelectObject(hdc, hOldFont);
+
+	return (float)size.cx;
 }
 
 
