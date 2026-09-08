@@ -32,6 +32,7 @@ namespace Config
 		bool chamsEnabled;
 		int  chamsStyle;      // 0 = solid, 1 = wireframe
 		bool neonEnabled;     // "Neon" bloom chams (neonChams.h) - overrides the styles above while on
+		bool nameEsp;         // NAME ESP (nameEsp.h / cgameHook.h) - player names through walls
 		bool logShaders;
 
 		// optional one-shot fallback if an older kutaQ3.cfg had a [Menu] section

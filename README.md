@@ -3,7 +3,8 @@
 OpenGL hook DLL for Quake III Arena with a Dear ImGui in-game menu.
 
 The DLL hooks `SwapBuffers` (with a `wglSwapBuffers` fallback), `glBindTexture`, `glDrawElements`,
-`glVertexPointer`, `CreateWindowExA` and `LoadLibraryExA` with Microsoft Detours. The **"kutaQ3 hook"** menu
+`glVertexPointer`, `CreateWindowExA`, `LoadLibraryExA` / `LoadLibraryA` and - once the native cgame
+module is mapped - that module's exported `vmMain` and `dllEntry` with Microsoft Detours. The **"kutaQ3 hook"** menu
 is rendered on top of the game every frame using Dear ImGui (the bloat-free immediate mode
 GUI for C++) with the fixed-function OpenGL2 backend (`imgui/imgui_impl_opengl2.cpp` +
 `imgui/imgui_impl_opengl2.h`), which fits Quake 3's legacy GL context.
@@ -84,6 +85,61 @@ While a guard is alive, `GL::LegacyStateGuard::IsActive()` is true and the hooke
 no shader sniffing). Multitexture / buffer / program entry points are resolved lazily through
 `wglGetProcAddress` and simply skipped on a pure GL 1.1 context.
 
+## NAME ESP and the cgame vmMain hook
+
+Player names above every other player's head, through walls, drawn with the `GL::Font`
+display-list text renderer in `glText.h` / `glText.cpp`. Toggled with the **Name ESP
+(OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in `kutaQ3.cfg`); the colour is the
+team from the clientinfo, and a tag clamped to the screen edge is dimmed.
+
+None of it reads guessed offsets out of `quake3.exe`. Quake 3 keeps everything the ESP needs
+behind the cgame module boundary, and that boundary is two exported functions - which is
+exactly what `cgameHook.h` / `cgameHook.cpp` detour:
+
+- `dllEntry( int (QDECL *dllSyscall)(int arg, ...) )` - how the engine hands the cgame its
+  **syscall trampoline**. Capturing that pointer is the whole trick: it is the supported way to
+  ask the engine for the client's own state, and it is what the cgame's own `trap_*` wrappers
+  call.
+- `vmMain( int command, int arg0 ... )` - every call into the cgame. `CG_INIT` / `CG_SHUTDOWN`
+  mark level load and unload; `CG_DRAW_ACTIVE_FRAME` fires once per rendered frame and carries
+  `cl.serverTime`, so it is where the ESP gathers its data.
+
+The hooks go on the module's exports (`GetProcAddress(hCgame, "vmMain")` -> `DetourAttach`), so
+there is nothing to signature scan. `main.cpp`'s `LoadLibraryExA` / `LoadLibraryA` detours attach
+the moment `cgame_mp_x86.dll` (retail) or `cgamex86.dll` (mod / ioquake3) is mapped - which has to
+be immediate, because the engine calls `dllEntry` before it ever sends `CG_INIT`. `CGame::Poll()`,
+run from the SwapBuffers hook, notices the engine unloading the module on disconnect and hooks the
+next one; an already-unmapped module is abandoned rather than detached, since patching the
+trampoline back would write into freed memory.
+
+Reading state through the trampoline only works **inside** a VM call: the engine resolves the
+pointers it is handed with `VM_ArgPtr()`, which passes them straight through while the cgame VM is
+the current one and hands back NULL otherwise. So the split is fixed -
+
+1. `vmMain(CG_DRAW_ACTIVE_FRAME)` -> `NameEsp::Gather()` asks for
+   `CG_GETCURRENTSNAPSHOTNUMBER` / `CG_GETSNAPSHOT` / `CG_GETGAMESTATE` /
+   `CG_GETCURRENTCMDNUMBER` / `CG_GETUSERCMD` / `CG_CVAR_VARIABLESTRINGBUFFER`, and copies out
+   the player entity positions, the `CS_PLAYERS` configstring names and the view;
+2. the hooked `SwapBuffers` -> `NameEsp::Draw()` projects and renders that frame with `GL::Font`.
+
+The structures crossing that door are mirrored by hand in `q3sdk.h` (the GPL headers in `SDK/` stay
+out of the build - see `SDK/README.md`), and `SDK/code/client/cl_sdkmirror.cpp` asserts every
+mirrored size, offset and syscall number against the real 1.32b headers.
+
+The view is rebuilt rather than stolen: the cgame's `refdef` is private to the cgame module, so the
+angles come from the newest `usercmd_t` plus `playerState_t::delta_angles` (the same
+`SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i])` the engine's `PM_UpdateViewAngles()` does), the
+origin from the snapshot's `playerState_t::origin` pushed forward by that snapshot's age, `fov_x`
+from `cg_fov`, and `fov_y` plus the screen rectangle from the GL viewport at draw time. Remote
+players' positions are carried forward the same way, using the velocity implied by the previous
+snapshot, so a moving player's tag does not sit a snapshot behind them.
+
+> **Needs a native cgame.** `vmMain` is a real function only in a DLL cgame (`vm_cgame 1`). With
+> the interpreted default (`vm_cgame 0`) the cgame is bytecode inside `quake3.exe` and there is no
+> `vmMain` to hook: the menu then reads *"cgame: no cgame VM loaded"* and the ESP draws nothing.
+> Injecting after the map has loaded also misses `dllEntry`, which the status line reports the same
+> way - reconnecting or loading another map fixes it.
+
 ## Features
 
 - Chams (wallhack) on player models - FFA, red team and blue team models
@@ -96,6 +152,12 @@ no shader sniffing). Multitexture / buffer / program entry points are resolved l
   by a white-hot depth-tested core. A `timeGetTime()` pulse makes the glow breathe. Fixed-function
   GL 1.1 has no shaders/FBOs, so this additive over-draw trick is the era-correct "bloom".
   While enabled it overrides the Solid/Wireframe styles (`NeonEnabled` in `kutaQ3.cfg`).
+- **NAME ESP** (`nameEsp.h`) - every other player's name drawn above their head through walls,
+  in their team colour, with a 1px drop shadow so it stays readable on any background.
+  Toggled with the **Name ESP (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in
+  `kutaQ3.cfg`), driven by the cgame `vmMain` hook described above. Your own name is not drawn,
+  dead players (corpses) are skipped, and tags for players outside the frustum are clamped to
+  the screen edge and dimmed.
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
@@ -132,6 +194,8 @@ Use **Save settings** / **Load settings** in the menu, or edit `kutaQ3.cfg` by h
 [Features]
 ChamsEnabled=1
 ChamsStyle=0          ; 0 = solid, 1 = wireframe
+NeonEnabled=0         ; 1 = neon bloom chams override the style above
+NameEspEnabled=1      ; 1 = player names on screen (needs the cgame vmMain hook)
 LogShaders=1
 ```
 
@@ -140,6 +204,23 @@ after you move/resize/collapse a window, and both files are written on DLL unloa
 
 This ImGui snapshot is **master** (no docking). Dock-space layouts are not stored
 until the docking branch is used; the same `kutaQ3_imgui.ini` path will then include them.
+
+## Tests
+
+The DLL is a Win32/MSVC build, so it cannot be compiled on a Linux host - but the parts of the
+NAME ESP that do not need Windows can be, and are:
+
+```
+make -C tests check
+```
+
+| target | what it runs |
+|---|---|
+| `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h` as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild, the smoothing, and the projection - checked against the engine's own `AngleVectors()` compiled out of `SDK/code/game/q_math.c`. |
+| `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours and strings actually issued for a frame can be asserted on. |
+
+They need nothing but a C++11 compiler; `tests/build/` is ignored.
 
 ## Third-party
 

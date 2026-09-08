@@ -9,6 +9,9 @@ x64/
 *.opensdf
 ipch/
 
+# test harness build output (make -C tests)
+tests/build/
+
 # hook runtime logs / user settings
 log.txt
 *.log

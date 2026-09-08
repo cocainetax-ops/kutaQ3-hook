@@ -165,6 +165,9 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="neonChams.cpp" />
+    <ClCompile Include="cgameHook.cpp" />
+    <ClCompile Include="nameEspCore.cpp" />
+    <ClCompile Include="nameEsp.cpp" />
     <ClCompile Include="glText.cpp" />
     <ClCompile Include="glDraw.cpp" />
     <ClCompile Include="glStateGuard.cpp" />
@@ -180,6 +183,9 @@
   <ItemGroup>
     <ClInclude Include="main.h" />
     <ClInclude Include="neonChams.h" />
+    <ClInclude Include="q3sdk.h" />
+    <ClInclude Include="cgameHook.h" />
+    <ClInclude Include="nameEsp.h" />
     <ClInclude Include="detver.h" />
     <ClInclude Include="detours.h" />
     <ClInclude Include="glText.h" />

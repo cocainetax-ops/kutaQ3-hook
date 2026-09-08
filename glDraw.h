@@ -3,7 +3,7 @@
 #pragma once
 #include <windows.h>
 #include <stdio.h>
-#include <gl\GL.h>
+#include <gl/GL.h>
 
 
 //https://guidedhacking.com/threads/opengl-swapbuffers-hook-template-source-code.11476/
