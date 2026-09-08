@@ -145,3 +145,7 @@ until the docking branch is used; the same `kutaQ3_imgui.ini` path will then inc
 
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT license) - `imgui/`
 - [Microsoft Detours 3.0](https://github.com/microsoft/Detours) - `detours.h`, `detours.lib`, `detours.pdb`, `detver.h`
+- [Quake III Arena 1.32b source](https://github.com/id-Software/Quake-III-Arena)
+  (GPL v2, commit `dbe4ddb`) - `SDK/`, the engine's own data structures for
+  reading client state instead of guessing at offsets. See `SDK/README.md`;
+  `SDK/COPYING.txt` carries the licence.
