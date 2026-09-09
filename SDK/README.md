@@ -76,10 +76,12 @@ client ↔ cgame boundary — it contains `CL_CgameSystemCalls()`, the table the
 engine answers cgame syscalls through. It also shows `CL_CgameSystemCalls()`'
 real 1.32 signature — `int CL_CgameSystemCalls( int *args )`, not varargs — and
 `VMA(x)` / `VMF(x)`, which is how the hook's mirrored syscall numbers were
-checked. `cl_sdkmirror.cpp` is the third harness: it includes `../../../q3sdk.h`
-alongside these headers and `static_assert`s that the hook's hand-written mirror
-of `snapshot_t` / `playerState_t` / `entityState_t` / `gameState_t` / `usercmd_t`
-and of the cgame syscall and command enums still matches. Unlike the other two it
+checked. `cl_sdkmirror.cpp` is the third harness: it includes `../../../q3sdk.h` and
+`../../../vmFind.h` alongside these headers and `static_assert`s that the hook's
+hand-written mirrors - `snapshot_t` / `playerState_t` / `entityState_t` /
+`gameState_t` / `usercmd_t` / `refdef_t` against `cgame/tr_types.h`, the cgame
+syscall and command enums against `cgame/cg_public.h`, and the `vm_t` mirror
+against `qcommon/vm_local.h` - still match. Unlike the other two it
 prints nothing interesting — its value is that it fails to *compile* when the
 mirror drifts. It is a `.cpp` because the mirror lives in `namespace q3`, which
 is what lets one translation unit see both sets of type names.
@@ -201,6 +203,14 @@ root):
   `static_assert` that keeps that true.
 - `win_input.c` / `win_wndproc.c` fail with `fatal error: windows.h` — expected,
   they are reference-only off Windows.
+- **The `vm_t` field offsets behind `vm_t::name` are *not* checked on a 64-bit
+  host.** `struct vm_s` is full of pointers, so the engine's copy is 248 bytes on
+  LP64 against the mirror's 204 on x86, and every offset after `name` differs.
+  `cl_sdkmirror.cpp` therefore asserts the two ABI-locked fields against the
+  engine's own `VM_OFFSET_PROGRAM_STACK` / `VM_OFFSET_SYSTEM_CALL` on any host,
+  and puts the full field-by-field comparison inside `#if UINTPTR_MAX ==
+  0xffffffff` so an x86 build checks all of it. Build the harness on x86 to get
+  that coverage; a 32-bit *host* build is the point, not a `-m32` cross build.
 - The header closure is complete: every `#include "..."` in the 22 headers
   resolves inside `code/`, with nothing missing.
 

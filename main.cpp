@@ -28,13 +28,13 @@
 // a through-walls bloom halo, toggled from the VISUALS tab with the "Neon" button.
 #include "neonChams.h"
 
-// kutaQ3 hook - Detours hook on the cgame VM's exported vmMain() / dllEntry() (see cgameHook.h).
-// This is the door into Quake 3's own client state: the engine hands the cgame module its syscall
-// trampoline through dllEntry, and vmMain(CG_DRAW_ACTIVE_FRAME) fires once per rendered frame.
-#include "cgameHook.h"
+// kutaQ3 hook - Detours hook on the cgame VM's syscall dispatcher (see vmHook.h / vmFind.h). This
+// is the door into Quake 3's own client state, and it works for the bytecode cgame in pak0.pk3 as
+// well as for a native cgame DLL - there is nothing to set in vm_cgame and no module to wait for.
+#include "vmHook.h"
 
 // kutaQ3 hook - NAME ESP (see nameEsp.h). Player names drawn above every other player, through
-// walls, with the GL::Font text renderer. Gathered inside vmMain, drawn from the SwapBuffers hook.
+// walls, with the GL::Font text renderer. Gathered and drawn from the SwapBuffers hook.
 #include "nameEsp.h"
 // =============================================================================================== //
 
@@ -55,8 +55,6 @@ glDrawElements_t origglDrawElements = NULL;
 glVertexPointer_t origglVertexPointer = NULL;
 SwapBuffers_t origwglSwapBuffers = NULL;
 CreateWindowExA_t origCreateWindowExA = NULL;
-LoadLibraryExA_t origLoadLibraryExA = NULL;
-LoadLibraryA_t origLoadLibraryA = NULL;
 
 char dlldir[320] = { 0 };
 
@@ -1186,13 +1184,14 @@ void RenderKutaQ3Menu()
 			ImGui::Spacing();
 
 			// NAME ESP (nameEsp.h): every other player's name above their head, through walls. The
-			// data comes from the cgame VM through the vmMain / dllEntry hook (cgameHook.h), so the
+			// data comes from the cgame VM through the syscall dispatcher hook (vmHook.h), so the
 			// status line under the box doubles as "is that hook actually in place".
 			ImGui::Checkbox("Name ESP (OpenGL)", &cfg.nameEsp);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Player names above every other player, through walls.\n"
 				                  "Colour is the team from the clientinfo, dimmed means off screen.\n"
-				                  "Needs the cgame vmMain hook: a native cgame DLL (vm_cgame 1).");
+				                  "Reads the cgame VM directly - works with the stock QVM, no\n"
+				                  "vm_cgame setting and no cgame DLL needed.");
 			if (cfg.nameEsp)
 			{
 				const NameEsp::Frame& esp = NameEsp::Current();
@@ -1200,7 +1199,7 @@ void RenderKutaQ3Menu()
 					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d name%s on screen",
 					                   esp.playerCount, esp.playerCount == 1 ? "" : "s");
 				else
-					ImGui::TextDisabled("cgame: %s", CGame::Status());
+					ImGui::TextDisabled("cgame: %s", Vm::Status());
 			}
 
 			ImGui::EndTabItem();
@@ -1292,10 +1291,10 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	DInput::Install();
 	DInput::SetMenuOpen(bMenuShown && bImGuiReady);
 
-	// kutaQ3 hook - keep the cgame vmMain / dllEntry hook alive: notice the engine unloading the
-	// cgame module (disconnect, map change) and retry the attach while there is none. Throttled
-	// internally, so this is cheap on the frames where there is nothing to do.
-	CGame::Poll();
+	// kutaQ3 hook - keep the cgame VM hook alive: notice the engine freeing the VM record
+	// (disconnect, map change), pick up the next one, and re-find the configstrings after a level
+	// load. Throttled internally, so this is cheap on the frames where there is nothing to do.
+	Vm::Poll();
 
 	if (!bImGuiReady)
 	{
@@ -1373,10 +1372,15 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 			g_LastGLContext = currentGlContext;
 	}
 
-	// kutaQ3 hook - NAME ESP. Drawn before the ImGui frame so the menu stays on top of the tags,
-	// and before the OpenGL2 backend installs its own viewport. Reads the frame the vmMain hook
-	// gathered earlier in this same frame (nameEsp.h); a no-op while the feature is off or there is
-	// no cgame attached.
+	// kutaQ3 hook - NAME ESP. Gathered and drawn before the ImGui frame so the menu stays on top of
+	// the tags, and before the OpenGL2 backend installs its own viewport. Gather() reads what the
+	// VM hook captured while the cgame ran this frame (vmHook.h / nameEsp.h); a no-op while the
+	// feature is off or no cgame VM is loaded.
+	if (Config::g_Settings.nameEsp)
+		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
+	else if (NameEsp::Current().valid)
+		NameEsp::Reset();
+
 	NameEsp::Draw();
 
 	// Build + render the frame inside the legacy state guard.
@@ -1517,45 +1521,6 @@ HWND WINAPI newCreateWindowExA (
 // =============================================================================================== //
 
 
-// kutaQ3 hook - the engine maps the native cgame module with LoadLibrary() and calls its
-// dllEntry() a moment later, all inside one client frame. The vmMain / dllEntry detours (see
-// cgameHook.h) therefore have to be in place the instant the load returns, which is what these two
-// hooks are for. Both entry points are hooked: kernel32 implements LoadLibraryA on top of
-// LoadLibraryExA, so the Ex hook normally sees both, but that is an implementation detail this
-// should not depend on.
-static void OnModuleMaybeLoaded(LPCTSTR lpFileName)
-{
-	// LoadLibraryEx also takes MAKEINTRESOURCE names (LOAD_LIBRARY_AS_DATAFILE) - never treat one
-	// of those as a path
-	if (!lpFileName || IS_INTRESOURCE(lpFileName))
-		return;
-	if (!q3::IsNativeCgameModule(lpFileName))
-		return;
-
-	CGame::OnModuleLoaded(lpFileName);
-}
-
-HMODULE WINAPI newLoadLibraryExA (
-	_In_       LPCTSTR lpFileName,
-	_Reserved_ HANDLE  hFile,
-	_In_       DWORD   dwFlags
-) {
-	HMODULE module = origLoadLibraryExA (lpFileName, hFile, dwFlags);
-	if (module)
-		OnModuleMaybeLoaded(lpFileName);
-	return module;
-}
-
-HMODULE WINAPI newLoadLibraryA (
-	_In_ LPCTSTR lpFileName
-) {
-	HMODULE module = origLoadLibraryA (lpFileName);
-	if (module)
-		OnModuleMaybeLoaded(lpFileName);
-	return module;
-}
-
-
 
 // =============================================================================================== //
 
@@ -1567,7 +1532,6 @@ void HookFunctions()
 	HMODULE oMod = GetModuleHandle("opengl32.dll");
 	HMODULE gMod = GetModuleHandle("gdi32.dll");
 	HMODULE uMod = GetModuleHandle("User32.dll");
-	HMODULE kMod = GetModuleHandle("kernel32.dll");
 
 
 	if (!bGLSet)
@@ -1617,36 +1581,11 @@ void HookFunctions()
 			DetourTransactionCommit();
 		}
 
-
-		if (kMod)
-		{
-			origLoadLibraryExA = (LoadLibraryExA_t)(DWORD)GetProcAddress(kMod, "LoadLibraryExA");
-
-			DetourTransactionBegin();
-			DetourUpdateThread(GetCurrentThread());
-			DetourAttach(&(PVOID &)origLoadLibraryExA, newLoadLibraryExA);
-			DetourTransactionCommit();
-
-			// LoadLibraryA gets its own transaction: it is a thin wrapper in kernel32 and Detours
-			// may refuse to hook it on some builds, and a failed commit would roll the Ex hook
-			// above back with it.
-			origLoadLibraryA = (LoadLibraryA_t)(DWORD)GetProcAddress(kMod, "LoadLibraryA");
-			if (origLoadLibraryA)
-			{
-				DetourTransactionBegin();
-				DetourUpdateThread(GetCurrentThread());
-				if (DetourAttach(&(PVOID &)origLoadLibraryA, newLoadLibraryA) != NO_ERROR)
-					DetourTransactionAbort();
-				else
-					DetourTransactionCommit();
-			}
-		}
-
-		// kutaQ3 hook - the cgame VM's vmMain() / dllEntry(). This only catches a cgame module that
-		// was already resident when we were injected; the normal path is the LoadLibrary detour
-		// above, and CGame::Poll() in the SwapBuffers hook retries and notices when the engine
-		// unloads the module again.
-		CGame::Install();
+		// kutaQ3 hook - find the cgame VM inside quake3.exe and hook its syscall dispatcher
+		// (vmHook.h). At inject time there is usually no cgame at all - the main menu has none - and
+		// Vm::Poll() in the SwapBuffers hook picks it up the moment the engine creates one. Doing it
+		// here as well covers injecting into a map that is already running.
+		Vm::Install();
 	}
 	bGLSet = true;
 }
@@ -1678,9 +1617,9 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 			// never calls into unmapped hook code once this DLL is freed
 			DInput::Shutdown();
 
-			// detach the cgame vmMain / dllEntry hook - it lives in another module and is skipped
-			// if that module is already unmapped (see cgameHook.h)
-			CGame::Shutdown();
+			// detach the cgame VM syscall hook. It sits in quake3.exe, which cannot unmap itself,
+			// so the detach is always safe - unlike a detour inside a cgame DLL (see vmHook.h).
+			Vm::Shutdown();
 
 			// shut down the kutaQ3 hook menu
 			if (bImGuiReady)
@@ -1706,9 +1645,6 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpvReserved)
 			if (origwglSwapBuffers)
 				DetourDetach(&(PVOID &)origwglSwapBuffers, newwglSwapBuffers);
 			DetourDetach(&(PVOID &)origCreateWindowExA, newCreateWindowExA);
-			DetourDetach(&(PVOID &)origLoadLibraryExA, newLoadLibraryExA);
-			if (origLoadLibraryA)
-				DetourDetach(&(PVOID &)origLoadLibraryA, newLoadLibraryA);
 
 			DetourTransactionCommit();
 			::FreeLibrary(hModule);

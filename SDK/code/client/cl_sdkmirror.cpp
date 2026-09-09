@@ -42,12 +42,17 @@ It only compares facts about GPL code, so it is not itself GPL.
 
 #include "../../../q3sdk.h"		/* the hook's mirror - namespace q3, checked below */
 
+#include "../../../vmFind.h"	/* the vm_t mirror - checked against vm_local.h below */
+
 #include "../game/q_shared.h"	/* guarded: __Q_SHARED_H */
 #include "../game/bg_public.h"	/* unguarded - included once here */
 #include "../cgame/cg_public.h"	/* unguarded - included once here; snapshot_t + the syscall enums */
+#include "../cgame/tr_types.h"	/* guarded - refdef_t, the view the cgame rendered */
+#include "../qcommon/vm_local.h"/* unguarded - struct vm_s, the VM record vmFind.h mirrors */
 
 #include <stdio.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* ---- the mirror must agree with the engine, at compile time ---------------- */
 
@@ -66,6 +71,7 @@ CHECK_SIZE(playerState_t);
 CHECK_SIZE(usercmd_t);
 CHECK_SIZE(snapshot_t);
 CHECK_SIZE(gameState_t);
+CHECK_SIZE(refdef_t);
 
 CHECK_OFFSET(trajectory_t, trType);
 CHECK_OFFSET(trajectory_t, trTime);
@@ -111,6 +117,54 @@ CHECK_OFFSET(gameState_t, stringOffsets);
 CHECK_OFFSET(gameState_t, stringData);
 CHECK_OFFSET(gameState_t, dataCount);
 
+/* the view the cgame hands the renderer - vmHook.cpp captures it, NameEsp projects with it */
+CHECK_OFFSET(refdef_t, x);
+CHECK_OFFSET(refdef_t, y);
+CHECK_OFFSET(refdef_t, width);
+CHECK_OFFSET(refdef_t, height);
+CHECK_OFFSET(refdef_t, fov_x);
+CHECK_OFFSET(refdef_t, fov_y);
+CHECK_OFFSET(refdef_t, vieworg);
+CHECK_OFFSET(refdef_t, viewaxis);
+CHECK_OFFSET(refdef_t, time);
+CHECK_OFFSET(refdef_t, rdflags);
+CHECK_OFFSET(refdef_t, areamask);
+CHECK_OFFSET(refdef_t, text);
+
+/* ---- the VM record (vmFind.h) ----------------------------------------------------------------
+   vm_local.h pins the first two members itself - the x86 interpreter is written in assembly and
+   reads them at these fixed offsets - so those two are checked against the engine's own constants
+   and hold on any host. Everything after vm_t::name sits behind pointers, so on an LP64 host the
+   engine struct is wider than the x86-only mirror and only a 32-bit build can compare them; that
+   is what the #if below is for, and README.md says so. Nothing else in this file has that caveat:
+   the other mirrors are pointer free. */
+static_assert(offsetof(vm_t, programStack) == VM_OFFSET_PROGRAM_STACK,
+              "the engine moved programStack without moving VM_OFFSET_PROGRAM_STACK");
+static_assert(offsetof(VmFind::Record, programStack) == VM_OFFSET_PROGRAM_STACK,
+              "vmFind.h Record::programStack is not at VM_OFFSET_PROGRAM_STACK");
+static_assert(offsetof(VmFind::Record, systemCall) == VM_OFFSET_SYSTEM_CALL,
+              "vmFind.h Record::systemCall is not at VM_OFFSET_SYSTEM_CALL");
+static_assert(sizeof(((vm_t *)0)->name) == sizeof(VmFind::Record::name),
+              "vmFind.h Record::name is not MAX_QPATH wide");
+static_assert(sizeof(((vm_t *)0)->fqpath) == sizeof(VmFind::Record::fqpath),
+              "vmFind.h Record::fqpath is not MAX_QPATH+1 wide");
+static_assert(VmFind::kNameSize == MAX_QPATH, "vmFind.h kNameSize differs from MAX_QPATH");
+
+#if UINTPTR_MAX == 0xffffffff	/* x86: the mirror can be compared field by field */
+static_assert(sizeof(VmFind::Record) == sizeof(vm_t), "vmFind.h Record size differs from vm_t");
+static_assert(offsetof(VmFind::Record, name) == offsetof(vm_t, name), "vm_t::name moved");
+static_assert(offsetof(VmFind::Record, dllHandle) == offsetof(vm_t, dllHandle), "vm_t::dllHandle moved");
+static_assert(offsetof(VmFind::Record, entryPoint) == offsetof(vm_t, entryPoint), "vm_t::entryPoint moved");
+static_assert(offsetof(VmFind::Record, compiled) == offsetof(vm_t, compiled), "vm_t::compiled moved");
+static_assert(offsetof(VmFind::Record, codeBase) == offsetof(vm_t, codeBase), "vm_t::codeBase moved");
+static_assert(offsetof(VmFind::Record, codeLength) == offsetof(vm_t, codeLength), "vm_t::codeLength moved");
+static_assert(offsetof(VmFind::Record, dataBase) == offsetof(vm_t, dataBase), "vm_t::dataBase moved");
+static_assert(offsetof(VmFind::Record, dataMask) == offsetof(vm_t, dataMask), "vm_t::dataMask moved");
+static_assert(offsetof(VmFind::Record, stackBottom) == offsetof(vm_t, stackBottom), "vm_t::stackBottom moved");
+static_assert(offsetof(VmFind::Record, fqpath) == offsetof(vm_t, fqpath), "vm_t::fqpath moved");
+#endif
+
+
 /* limits the mirror repeats */
 CHECK_CONST(kMaxClients, MAX_CLIENTS);
 CHECK_CONST(kMaxConfigStrings, MAX_CONFIGSTRINGS);
@@ -130,9 +184,12 @@ CHECK_CONST(kEtPlayer, ET_PLAYER);
 CHECK_CONST(kEfDead, EF_DEAD);
 CHECK_CONST(kDefaultViewHeight, DEFAULT_VIEWHEIGHT);
 
-/* the syscall / command numbers the hook actually issues */
+/* the syscall numbers the VM hook watches, and the ones the ESP's bridge still answers */
 CHECK_CONST(CG_MILLISECONDS, CG_MILLISECONDS);
 CHECK_CONST(CG_CVAR_VARIABLESTRINGBUFFER, CG_CVAR_VARIABLESTRINGBUFFER);
+CHECK_CONST(CG_CM_LOADMAP, CG_CM_LOADMAP);
+CHECK_CONST(CG_R_RENDERSCENE, CG_R_RENDERSCENE);
+CHECK_CONST(CG_GETGLCONFIG, CG_GETGLCONFIG);
 CHECK_CONST(CG_GETGAMESTATE, CG_GETGAMESTATE);
 CHECK_CONST(CG_GETCURRENTSNAPSHOTNUMBER, CG_GETCURRENTSNAPSHOTNUMBER);
 CHECK_CONST(CG_GETSNAPSHOT, CG_GETSNAPSHOT);
@@ -177,6 +234,7 @@ int main(void)
 	PSIZE(usercmd_t);
 	PSIZE(snapshot_t);
 	PSIZE(gameState_t);
+	PSIZE(refdef_t);
 
 	printf("\noffsets the NAME ESP reads\n");
 	POFFSET(trajectory_t, trBase);
@@ -199,6 +257,17 @@ int main(void)
 	POFFSET(snapshot_t, entities);
 	POFFSET(gameState_t, stringOffsets);
 	POFFSET(gameState_t, stringData);
+	POFFSET(refdef_t, fov_x);
+	POFFSET(refdef_t, vieworg);
+	POFFSET(refdef_t, viewaxis);
+	POFFSET(refdef_t, time);
+
+	printf("\nthe VM record vmFind.h mirrors (x86 only - see the #if above)\n");
+	printf("  %-22s mirror %6u  engine %6u%s\n", "sizeof(Record/vm_t)",
+	       (unsigned)sizeof(VmFind::Record), (unsigned)sizeof(vm_t),
+	       sizeof(void *) == 4 ? "" : "   <-- host is not 32 bit, not comparable");
+	printf("  %-22s mirror %6u  engine %6u\n", "VM_OFFSET_SYSTEM_CALL",
+	       (unsigned)offsetof(VmFind::Record, systemCall), (unsigned)VM_OFFSET_SYSTEM_CALL);
 
 	printf("\nlimits and constants\n");
 	PCONST(kMaxClients, MAX_CLIENTS);
@@ -211,9 +280,12 @@ int main(void)
 	PCONST(kEfDead, EF_DEAD);
 	PCONST(kDefaultViewHeight, DEFAULT_VIEWHEIGHT);
 
-	printf("\ncgame syscalls used by the ESP\n");
+	printf("\ncgame syscalls the VM hook watches / the ESP bridge answers\n");
 	PCONST(CG_MILLISECONDS, CG_MILLISECONDS);
 	PCONST(CG_CVAR_VARIABLESTRINGBUFFER, CG_CVAR_VARIABLESTRINGBUFFER);
+	PCONST(CG_CM_LOADMAP, CG_CM_LOADMAP);
+	PCONST(CG_R_RENDERSCENE, CG_R_RENDERSCENE);
+	PCONST(CG_GETGLCONFIG, CG_GETGLCONFIG);
 	PCONST(CG_GETGAMESTATE, CG_GETGAMESTATE);
 	PCONST(CG_GETCURRENTSNAPSHOTNUMBER, CG_GETCURRENTSNAPSHOTNUMBER);
 	PCONST(CG_GETSNAPSHOT, CG_GETSNAPSHOT);

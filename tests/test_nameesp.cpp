@@ -21,6 +21,7 @@
 
 // the engine's own angle maths, from SDK/code/game/q_math.c
 extern "C" void AngleVectors(const float angles[3], float forward[3], float right[3], float up[3]);
+extern "C" void AnglesToAxis(const float angles[3], float axis[3][3]);
 
 #include "check.h"
 
@@ -264,6 +265,116 @@ static void TestView()
 	FakeEngine::SetFovString("400");
 	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered with cg_fov 400");
 	CHECK_NEAR(NameEsp::Current().view.fovX, 179.0f, 0.001, "fov above 179 clamped to 179");
+}
+
+// =============================================================================================== //
+// The captured refdef_t path (vmHook.cpp hands Gather() the view the cgame rendered). Built with
+// the engine's own AnglesToAxis() so the axes are id's, not another copy of the formula.
+// =============================================================================================== //
+
+static void MakeRefdef(q3::refdef_t& rd, const float origin[3], const float angles[3], float fov)
+{
+	memset(&rd, 0, sizeof(rd));
+	rd.x = 0; rd.y = 0; rd.width = 1280; rd.height = 1024;
+	rd.fov_x = fov;
+	rd.fov_y = fov * 0.75f;
+	rd.time = 5000;
+	for (int i = 0; i < 3; ++i)
+		rd.vieworg[i] = origin[i];
+	AnglesToAxis(angles, rd.viewaxis);
+}
+
+static void TestRefdefView()
+{
+	Section("NameEsp::Gather - the captured refdef_t view");
+
+	const float origin[3]   = { 10.0f, 20.0f, 30.0f };
+	const float velocity[3] = { 320.0f, -160.0f, 0.0f };
+	const float angles[3]   = { -12.5f, 137.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, angles, 26);
+	FakeEngine::SetFovString("110");
+	FakeEngine::SetDeltaAngles(0, 4096, 0);        // the usercmd path would add 22.5 deg of yaw
+
+	const float viewOrigin[3] = { 111.0f, -222.0f, 333.0f };
+	q3::refdef_t rd;
+	MakeRefdef(rd, viewOrigin, angles, 105.0f);
+
+	// pin the convention RefdefUsable() measures, against the engine's own AnglesToAxis():
+	// cross(viewaxis[0], viewaxis[1]) == +viewaxis[2], so the triple is right handed and
+	// viewaxis[1] is the world LEFT vector (AngleVectors' "right" is (0,-1,0) at zero angles and
+	// AnglesToAxis negates it).
+	{
+		const float* f = rd.viewaxis[0];
+		const float* l = rd.viewaxis[1];
+		const float* u = rd.viewaxis[2];
+		const float det = (f[1] * l[2] - f[2] * l[1]) * u[0]
+		                + (f[2] * l[0] - f[0] * l[2]) * u[1]
+		                + (f[0] * l[1] - f[1] * l[0]) * u[2];
+		CHECK_NEAR(det, 1.0f, 1e-5, "the engine's AnglesToAxis triple is right handed");
+	}
+
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &rd), "frame gathered with a refdef");
+	const NameEsp::View& view = NameEsp::Current().view;
+	CHECK_TRUE(view.valid, "view valid");
+	CHECK_NEAR(view.origin[0], 111.0f, 1e-5, "refdef vieworg x, not the snapshot origin");
+	CHECK_NEAR(view.origin[1], -222.0f, 1e-5, "refdef vieworg y");
+	CHECK_NEAR(view.origin[2], 333.0f, 1e-5, "refdef vieworg z - no viewheight added");
+	CHECK_NEAR(view.fovX, 105.0f, 1e-5, "fov_x straight from the refdef, not cg_fov");
+
+	// the axes are the cgame's, verbatim - which is also what proves delta_angles never got applied
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 3; ++j)
+			CHECK_NEAR(view.axis[i][j], rd.viewaxis[i][j], 1e-6, "viewaxis copied verbatim");
+
+	// ---- a refdef that fails the shape check must be ignored, not projected with ---------------
+	NameEsp::Reset();
+	q3::refdef_t bad = rd;
+	bad.fov_x = 0.0f;
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a zero fov refdef");
+	CHECK_NEAR(NameEsp::Current().view.fovX, 110.0f, 0.001, "rejected -> falls back to cg_fov");
+
+	NameEsp::Reset();
+	bad = rd;
+	bad.width = 0;
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a zero width refdef");
+	CHECK_NEAR(NameEsp::Current().view.origin[0], 10.0f, 0.01, "rejected -> falls back to the snapshot origin");
+
+	// AnglesToAxis() gives a right handed triple (cross(axis0, axis1) == +axis2); negating axis[1]
+	// makes it left handed, i.e. a mirrored view, which the handedness check has to catch instead
+	// of mirroring every tag on screen
+	NameEsp::Reset();
+	bad = rd;
+	for (int j = 0; j < 3; ++j)
+		bad.viewaxis[1][j] = -bad.viewaxis[1][j];
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a mirrored refdef");
+
+	// the rejected refdef means the fallback view is built instead: usercmd angles plus the
+	// delta_angles set above, i.e. yaw + 22.5 degrees - definitely not the mirrored axis
+	{
+		const float expectedYaw = angles[1] + (float)(4096 * (360.0 / 65536));
+		float expectAngles[3] = { angles[0], expectedYaw, angles[2] };
+		float ef[3], er[3], eu[3];
+		AngleVectors(expectAngles, ef, er, eu);
+		const NameEsp::View& fallback = NameEsp::Current().view;
+		CHECK_NEAR(fallback.axis[1][0], -er[0], 1e-4, "mirrored axes rejected -> the fallback view is used");
+		CHECK_TRUE(fabs(fallback.axis[1][0] - rd.viewaxis[1][0]) > 0.1,
+		           "and the mirrored viewaxis[1] was not copied through");
+	}
+
+	NameEsp::Reset();
+	bad = rd;
+	bad.viewaxis[0][0] = 0.0f / 0.0f;              // NaN
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a NaN axis");
+	CHECK_NEAR(NameEsp::Current().view.fovX, 110.0f, 0.001, "NaN refdef rejected");
+
+	// no refdef at all still works - the fallback view above is what the tests before this use
+	NameEsp::Reset();
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), NULL), "gathered without a refdef");
+	CHECK_TRUE(NameEsp::Current().view.valid, "fallback view still valid");
 }
 
 static void TestSmoothing()
@@ -549,6 +660,7 @@ int main(void)
 	TestGatherGuards();
 	TestGatherPlayers();
 	TestView();
+	TestRefdefView();
 	TestSmoothing();
 	TestReset();
 	TestProjection();

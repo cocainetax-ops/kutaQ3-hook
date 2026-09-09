@@ -76,28 +76,11 @@ typedef HWND(WINAPI *CreateWindowExA_t) (
 
 
 
-typedef HMODULE(WINAPI *LoadLibraryExA_t) (
-	_In_       LPCTSTR lpFileName,
-	_Reserved_ HANDLE  hFile,
-	_In_       DWORD   dwFlags
-);
-
-// LoadLibraryA is hooked as well as LoadLibraryExA: kernel32 implements the former on top of the
-// latter, so the Ex hook normally sees both, but that is an implementation detail and the cgame
-// module hook (cgameHook.h) depends on noticing the load the moment it happens.
-typedef HMODULE(WINAPI *LoadLibraryA_t) (
-	_In_ LPCTSTR lpFileName
-);
-
-
-
 extern glBindTexture_t origglBindTexture;
 extern glDrawElements_t origglDrawElements;
 extern glVertexPointer_t origglVertexPointer;
 extern SwapBuffers_t origwglSwapBuffers;
 extern CreateWindowExA_t origCreateWindowExA;
-extern LoadLibraryExA_t origLoadLibraryExA;
-extern LoadLibraryA_t origLoadLibraryA;
 
 // =============================================================================================== //
 

@@ -1,7 +1,7 @@
 // =============================================================================================== //
 // kutaQ3 hook - NAME ESP, GL half (see nameEsp.h for the overview)
 //
-// Renders the tags the portable half (nameEspCore.cpp) gathered inside the cgame's vmMain, using
+// Renders the tags the portable half (nameEspCore.cpp) gathered from the cgame VM, using
 // the GL::Font display-list text renderer from glText.h. Runs from the hooked SwapBuffers in
 // main.cpp: that is the one point in the frame where the GL context is current and the game scene
 // is already drawn, so the text lands on top of it.
