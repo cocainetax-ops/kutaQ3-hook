@@ -81,8 +81,30 @@ void NameEsp::Draw()
 			// centre the name on the projected point: with width 0 the helper returns
 			// x - textWidth / 2, which is what "centred on x" means here
 			const float textWidth = s_font.TextWidth(tag.name);
-			const float x = s_font.centerText(p.x, 0.0f, textWidth);
-			const float y = p.y;
+			float x = s_font.centerText(p.x, 0.0f, textWidth);
+			float y = p.y;
+
+			// glRasterPos outside the ortho rect invalidates the raster position and the
+			// display-list font then draws NOTHING - it does not clip. The projection
+			// already clamped the anchor point p to the viewport, but centring can still
+			// push the string's left edge off-screen (a tag pinned to the left edge would
+			// start at x = -textWidth / 2 and never draw). Keep the whole string - shadow
+			// included - inside the overlay so edge tags stay visible instead of vanishing.
+			// The overlay's ortho is (0..vp.width, 0..vp.height); see GL::SetupOrtho().
+			const float overlayW = (float)vp.width;
+			const float overlayH = (float)vp.height;
+			if (x < 0.0f)
+				x = 0.0f;
+			if (x + textWidth + 1.0f > overlayW)
+				x = overlayW - textWidth - 1.0f;
+			if (x < 0.0f)                              // text wider than the viewport
+				x = 0.0f;
+			if (y < 0.0f)
+				y = 0.0f;
+			if (y + (float)FONT_HEIGHT + 1.0f > overlayH)
+				y = overlayH - (float)FONT_HEIGHT - 1.0f;
+			if (y < 0.0f)
+				y = 0.0f;
 
 			// No blending in the overlay (GL::SetupOrtho disables it and the display-list font has
 			// no alpha of its own), so readability comes from a 1px black drop shadow instead of a

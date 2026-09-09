@@ -294,15 +294,24 @@ bool NameEsp::ParseClientInfo(const char* infoString, int clientNum, PlayerTag& 
 	if (out.name[0] == 0)
 		return false;
 
-	// "\t\" is the team: "red" / "blue" / "free" / "spectator". Anything unrecognised - including a
-	// mod that renames the key - keeps the free-for-all colour, so a surprise here costs a colour
-	// and nothing else.
+	// "\t\" is the team. In 1.32 it is NUMERIC (cg_players.c CG_NewClientInfo does
+	// newInfo.team = atoi(Info_ValueForKey(configstring, "t"))): 0 free, 1 red, 2 blue,
+	// 3 spectator - the same numbering as team_t and as the Team enum below, so a numeric
+	// value maps across directly. String names ("red" / "blue" / ...) are only a fallback
+	// for mods that spell the team out. Anything unrecognised keeps the free-for-all
+	// colour, so a surprise here costs a colour and nothing else.
 	char team[32];
 	if (q3::InfoValueForKey(infoString, "t", team, sizeof(team)))
 	{
-		if (SameNoCase(team, "red"))            out.team = TeamRed;
-		else if (SameNoCase(team, "blue"))      out.team = TeamBlue;
-		else if (SameNoCase(team, "spectator")) out.team = TeamSpectator;
+		TrimSpaces(team);
+		char* end = NULL;
+		const long n = strtol(team, &end, 10);
+		if (end != team && end && *end == 0 && n >= TeamFree && n < TeamCount)
+			out.team = (int)n;                            // stock 1.32: "0".."3"
+		else if (SameNoCase(team, "red"))            out.team = TeamRed;
+		else if (SameNoCase(team, "blue"))           out.team = TeamBlue;
+		else if (SameNoCase(team, "spectator"))      out.team = TeamSpectator;
+		else if (SameNoCase(team, "free"))           out.team = TeamFree;
 	}
 
 	return true;

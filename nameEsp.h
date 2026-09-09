@@ -53,7 +53,9 @@
 
 namespace NameEsp
 {
-	// clientinfo's "\t\" value, mapped to the palette below. Unknown / missing -> TeamFree.
+	// clientinfo's "\t\" value, mapped to the palette below. Stock 1.32 sends it numeric
+	// (CG_NewClientInfo: atoi), with the same numbering as team_t - 0 free, 1 red, 2 blue,
+	// 3 spectator - so the enum matches on purpose. Unknown / missing -> TeamFree.
 	enum Team
 	{
 		TeamFree = 0,
@@ -126,7 +128,7 @@ namespace NameEsp
 	// Palette for a Team value (Team out of range -> the free-for-all colour).
 	void TeamColor(int team, unsigned char rgb[3]);
 
-	// Parses the clientinfo configstring ("\n\Player\t\red\model\sarge\...") into a tag.
+	// Parses the clientinfo configstring ("\n\Player\t\1\model\sarge\...") into a tag.
 	// Returns false when the configstring carries no usable name. Exposed for the tests; Gather()
 	// uses it internally.
 	bool ParseClientInfo(const char* infoString, int clientNum, PlayerTag& out);

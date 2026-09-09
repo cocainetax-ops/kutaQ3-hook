@@ -70,6 +70,21 @@ static void TestInfoStringParsing()
 	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\Free", 4, tag), "no team key");
 	CHECK_INT(tag.team, NameEsp::TeamFree, "missing team defaults to free");
 
+	// stock 1.32 sends the team NUMERIC (CG_NewClientInfo: atoi): 0 free, 1 red, 2 blue,
+	// 3 spectator. The string names above are only a mod fallback.
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\R\\t\\1", 11, tag), "numeric red parsed");
+	CHECK_INT(tag.team, NameEsp::TeamRed, "numeric 1 is red");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\B\\t\\2", 12, tag), "numeric blue parsed");
+	CHECK_INT(tag.team, NameEsp::TeamBlue, "numeric 2 is blue");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\F\\t\\0", 13, tag), "numeric free parsed");
+	CHECK_INT(tag.team, NameEsp::TeamFree, "numeric 0 is free");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\S\\t\\3", 14, tag), "numeric spectator parsed");
+	CHECK_INT(tag.team, NameEsp::TeamSpectator, "numeric 3 is spectator");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\X\\t\\9", 15, tag), "out of range numeric accepted");
+	CHECK_INT(tag.team, NameEsp::TeamFree, "out of range numeric falls back to free");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\Y\\t\\ 2 ", 16, tag), "padded numeric parsed");
+	CHECK_INT(tag.team, NameEsp::TeamBlue, "padded numeric 2 is blue");
+
 	CHECK_TRUE(!NameEsp::ParseClientInfo("", 5, tag), "empty configstring rejected");
 	CHECK_TRUE(!NameEsp::ParseClientInfo("\\t\\red\\model\\sarge", 5, tag), "nameless configstring rejected");
 	CHECK_TRUE(!NameEsp::ParseClientInfo("\\n\\^1^2", 5, tag), "colour-only name rejected");
@@ -131,9 +146,9 @@ static void TestGatherPlayers()
 	NameEsp::Reset();
 	FakeEngine::SetSnapshotTime(1000);
 	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\red\\model\\sarge", (const float[]){ 300.0f, 0.0f, 8.0f });
-	FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\blue\\model\\slash",       (const float[]){ 0.0f, 400.0f, 16.0f });
-	FakeEngine::SetPlayer(3, "\\n\\Granger\\t\\free",                  (const float[]){ -500.0f, -500.0f, 0.0f });
+	FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\1\\model\\sarge", (const float[]){ 300.0f, 0.0f, 8.0f });
+	FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\2\\model\\slash",         (const float[]){ 0.0f, 400.0f, 16.0f });
+	FakeEngine::SetPlayer(3, "\\n\\Granger\\t\\free",             (const float[]){ -500.0f, -500.0f, 0.0f });
 	FakeEngine::SetDeadPlayer(4, "\\n\\Dead\\t\\red",                 (const float[]){ 10.0f, 10.0f, 0.0f });
 	FakeEngine::SetNonPlayerEntity(200, (const float[]){ 5.0f, 5.0f, 5.0f });
 

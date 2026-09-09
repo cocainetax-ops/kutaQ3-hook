@@ -34,7 +34,8 @@ namespace FakeEngine
 	void SetFovString(const char* value);                // what "cg_fov" reads as
 
 	// ---- other clients --------------------------------------------------------------------------
-	// infoString is the raw CS_PLAYERS configstring, e.g. "\\n\\Bitterman\\t\\red\\model\\sarge"
+	// infoString is the raw CS_PLAYERS configstring, e.g. "\\n\\Bitterman\\t\\1\\model\\sarge"
+	// (the team is numeric in 1.32: 0 free, 1 red, 2 blue, 3 spectator)
 	void SetPlayer(int clientNum, const char* infoString, const float origin[3]);
 	void SetDeadPlayer(int clientNum, const char* infoString, const float origin[3]);
 	void SetNonPlayerEntity(int number, const float origin[3]);   // ET_ITEM etc. - must be ignored
