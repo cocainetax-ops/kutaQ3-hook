@@ -34,6 +34,15 @@ namespace
 	int                    s_snapshotNumber = 0;
 	int                    s_snapshotTime   = 0;      // cl.snap.serverTime
 
+	// The fallback view (nameEsp.h) without a captured refdef: newest usercmd + cg_fov, the way
+	// PM_UpdateViewAngles() / CG_DrawActiveFrame() read them. Captured from the cgame's own
+	// reads so the bridge can serve them back to Gather().
+	q3::usercmd_t          s_userCmd;
+	bool                   s_haveUserCmd    = false;
+	int                    s_cmdNumber      = 0;      // cl.cmdNumber, from CG_GETCURRENTCMDNUMBER
+	char                   s_fov[32]        = { 0 };  // cg_fov value, from CG_CVAR_VARIABLESTRINGBUFFER
+	bool                   s_haveFov        = false;
+
 	uint32_t               s_lastDataBase   = 0;      // VM identity: changes on every level load
 	uint32_t               s_lastDllHandle  = 0;
 	uintptr_t              s_codeLow        = 0;      // main module range, for the systemCall check
@@ -176,11 +185,16 @@ namespace
 	{
 		memset(&s_snapshot, 0, sizeof(s_snapshot));
 		memset(&s_refdef, 0, sizeof(s_refdef));
+		memset(&s_userCmd, 0, sizeof(s_userCmd));
 		s_gameState      = NULL;
 		s_haveSnapshot   = false;
 		s_haveRefdef     = false;
+		s_haveUserCmd    = false;
 		s_snapshotNumber = 0;
 		s_snapshotTime   = 0;
+		s_cmdNumber      = 0;
+		// s_fov / s_haveFov survive: cg_fov is a client cvar, not per-level state, so the last
+		// captured value is still what the cgame would read after the reload.
 		NameEsp::Reset();
 	}
 
@@ -224,13 +238,62 @@ namespace
 
 		case q3::CG_GETGAMESTATE:
 		{
-			// fired once per level, from CG_Init. The copy is read live rather than kept here so
-			// that configstring changes show up without a re-scan.
+			// CG_Init fetches the whole gamestate once - and CG_ConfigStringModified() fetches it
+			// again on EVERY "cs" server command (cg_servercmds.c), i.e. whenever any configstring
+			// changes. Either way the address is &cgs.gameState; the copy is read live rather than
+			// kept here so that configstring changes show up without a re-scan.
 			const uintptr_t dest = Resolve(args[1]);
 			if (dest)
 				s_gameState = (const q3::gameState_t*)dest;
 			break;
 		}
+
+		case q3::CG_CVAR_VARIABLESTRINGBUFFER:
+		{
+			// trap_Cvar_VariableStringBuffer(name, buffer, bufsize). The cgame reads a handful of
+			// cvars per frame; only cg_fov is kept - Gather() rebuilds the view's fov_x from it
+			// when there is no captured refdef to take it from.
+			const uintptr_t nameAddr = Resolve(args[1]);
+			const uintptr_t bufAddr  = Resolve(args[2]);
+			const int bufsize = args[3];
+			if (nameAddr && bufAddr && bufsize > 0)
+			{
+				const char* name = (const char*)nameAddr;
+				if (strncmp(name, "cg_fov", 7) == 0)   // bounded: 6 chars + NUL
+				{
+					const char* val = (const char*)bufAddr;
+					size_t n = 0;
+					while (n + 1 < sizeof(s_fov) && n + 1 < (size_t)bufsize && val[n])
+					{
+						s_fov[n] = val[n];
+						++n;
+					}
+					s_fov[n] = 0;
+					s_haveFov = true;
+				}
+			}
+			break;
+		}
+
+		case q3::CG_GETCURRENTCMDNUMBER:
+			// trap_GetCurrentCmdNumber() takes no arguments; the command number is the return value.
+			s_cmdNumber = result;
+			break;
+
+		case q3::CG_GETUSERCMD:
+			// trap_GetUserCmd(cmdNumber, ucmd). CL_GetUserCmd() only writes the destination when
+			// it returns true. Prediction asks for a range ending at the current command, so the
+			// last sample taken is usually the current one - which is what Gather() asks for.
+			if (result)
+			{
+				const uintptr_t dest = Resolve(args[2]);
+				if (dest)
+				{
+					memcpy(&s_userCmd, (const void*)dest, sizeof(s_userCmd));
+					s_haveUserCmd = true;
+				}
+			}
+			break;
 
 		case q3::CG_GETCURRENTSNAPSHOTNUMBER:
 		{
@@ -286,38 +349,92 @@ namespace
 
 	int Q3SDK_CDECL bridgeSyscall(int arg, ...)
 	{
+		// Each case reads exactly the varargs its trap takes. Reading a fixed 4 would walk off
+		// the caller's argument list for traps that take fewer (CG_GETCURRENTCMDNUMBER takes
+		// none) - undefined behaviour that happens to read stack garbage on x86. va_end without
+		// consuming a trailing argument Gather() passes but the real trap does not take
+		// (CG_GETSNAPSHOT / CG_GETUSERCMD's sizeof) is fine and simply ignores it.
 		va_list ap;
 		va_start(ap, arg);
-		intptr_t a[4];
-		for (int i = 0; i < 4; ++i)
-			a[i] = va_arg(ap, intptr_t);
-		va_end(ap);
 
 		switch (arg)
 		{
 		case q3::CG_GETCURRENTSNAPSHOTNUMBER:
-			if (!a[0] || !a[1])
+		{
+			const intptr_t pNumber = va_arg(ap, intptr_t);
+			const intptr_t pTime   = va_arg(ap, intptr_t);
+			va_end(ap);
+			if (!pNumber || !pTime)
 				return 0;
-			*(int*)a[0] = s_snapshotNumber;
-			*(int*)a[1] = s_snapshotTime;
+			*(int*)pNumber = s_snapshotNumber;
+			*(int*)pTime   = s_snapshotTime;
 			return 0;
+		}
 
 		case q3::CG_GETSNAPSHOT:
-			if (!s_haveSnapshot || !a[1])
+		{
+			va_arg(ap, intptr_t);                       // snapshot number - the latest is served
+			const intptr_t dest = va_arg(ap, intptr_t);
+			va_end(ap);
+			if (!s_haveSnapshot || !dest)
 				return 0;                               // not connected / nothing valid yet
-			memcpy((void*)a[1], &s_snapshot, sizeof(s_snapshot));
+			memcpy((void*)dest, &s_snapshot, sizeof(s_snapshot));
 			return 1;
+		}
 
 		case q3::CG_GETGAMESTATE:
-			if (!s_gameState || !VmFind::GameStateLooksLive(s_gameState) || !a[0])
+		{
+			const intptr_t dest = va_arg(ap, intptr_t);
+			va_end(ap);
+			if (!s_gameState || !VmFind::GameStateLooksLive(s_gameState) || !dest)
 				return 0;
-			memcpy((void*)a[0], s_gameState, sizeof(q3::gameState_t));
+			memcpy((void*)dest, s_gameState, sizeof(q3::gameState_t));
 			return 0;
+		}
+
+		case q3::CG_GETCURRENTCMDNUMBER:
+		{
+			va_end(ap);                                 // no arguments; the number is returned
+			return s_cmdNumber;
+		}
+
+		case q3::CG_GETUSERCMD:
+		{
+			va_arg(ap, intptr_t);                       // requested number - the latest sample is served
+			const intptr_t dest = va_arg(ap, intptr_t);
+			va_end(ap);
+			if (!s_haveUserCmd || !dest)
+				return 0;
+			memcpy((void*)dest, &s_userCmd, sizeof(s_userCmd));
+			return 1;
+		}
+
+		case q3::CG_CVAR_VARIABLESTRINGBUFFER:
+		{
+			const intptr_t pName = va_arg(ap, intptr_t);
+			const intptr_t pBuf  = va_arg(ap, intptr_t);
+			const intptr_t size  = va_arg(ap, intptr_t);
+			va_end(ap);
+			if (!pName || !pBuf || size <= 0)
+				return 0;
+			char* buf = (char*)pBuf;
+			buf[0] = 0;
+			if (strcmp((const char*)pName, "cg_fov") != 0)
+				return 0;                               // only cg_fov is captured; the rest read empty
+			if (!s_haveFov)
+				return 0;                               // not seen yet - Gather() falls back to 90
+			size_t n = 0;
+			while (n + 1 < (size_t)size && s_fov[n])
+			{
+				buf[n] = s_fov[n];
+				++n;
+			}
+			buf[n] = 0;
+			return 0;
+		}
 
 		default:
-			// CG_GETUSERCMD / CG_GETCURRENTCMDNUMBER / CG_CVAR_VARIABLESTRINGBUFFER need a VM
-			// address to write into, so they are not served. Gather() takes the view from the
-			// captured refdef instead (nameEsp.h).
+			va_end(ap);
 			return 0;
 		}
 	}

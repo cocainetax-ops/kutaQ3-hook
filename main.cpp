@@ -1194,12 +1194,19 @@ void RenderKutaQ3Menu()
 				                  "vm_cgame setting and no cgame DLL needed.");
 			if (cfg.nameEsp)
 			{
+				// Always show both lines: the frame state tells a no-tags report apart at a glance.
+				// "N names" with nothing visible -> they project off screen; "snapshot ok, 0 other
+				// players" -> the snapshot carries only the viewer when joined (PVS); "no frame" ->
+				// the VM hook is not seeing the cgame's snapshots at all.
 				const NameEsp::Frame& esp = NameEsp::Current();
 				if (esp.valid && esp.playerCount > 0)
 					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d name%s on screen",
 					                   esp.playerCount, esp.playerCount == 1 ? "" : "s");
+				else if (esp.valid)
+					ImGui::TextDisabled("snapshot ok, 0 other players in it");
 				else
-					ImGui::TextDisabled("cgame: %s", Vm::Status());
+					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
+				ImGui::TextDisabled("cgame: %s", Vm::Status());
 			}
 
 			ImGui::EndTabItem();

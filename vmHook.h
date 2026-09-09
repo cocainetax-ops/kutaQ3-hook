@@ -48,9 +48,13 @@
 //                      again into ours: player entity positions + the local playerState_t
 //   CG_GETGAMESTATE -> the address of the cgame's cgs.gameState, read live for the CS_PLAYERS
 //                      configstrings (found by scanning instead when the hook was installed after
-//                      the level loaded, see vmFind.h)
+//                      the level loaded, see vmFind.h). Fires in CG_Init and again on every "cs"
+//                      server command, so the pointer is refreshed whenever the cgame re-fetches it.
 //   CG_R_RENDERSCENE-> the refdef_t the cgame rendered this frame: the exact view origin, view
 //                      axis and fov, which is what NameEsp projects with
+//   CG_GETUSERCMD / CG_GETCURRENTCMDNUMBER / CG_CVAR_VARIABLESTRINGBUFFER ("cg_fov") -> the newest
+//                      usercmd and the fov cvar, so the fallback view (nameEsp.h) is what the cgame
+//                      itself used even when no refdef was captured
 //   CG_CM_LOADMAP   -> level boundary: everything captured so far is dropped
 //
 // NameEsp::Gather() is handed a trampoline (Syscall()) that answers those same trap numbers out of
@@ -79,7 +83,8 @@ namespace Vm
 	const char* Status();
 
 	// The trampoline NameEsp::Gather() reads through, or NULL when no cgame VM is known. Answers
-	// CG_GETSNAPSHOT / CG_GETGAMESTATE / CG_GETCURRENTSNAPSHOTNUMBER from captured state; the
+	// CG_GETSNAPSHOT / CG_GETGAMESTATE / CG_GETCURRENTSNAPSHOTNUMBER / CG_GETUSERCMD /
+	// CG_GETCURRENTCMDNUMBER / CG_CVAR_VARIABLESTRINGBUFFER ("cg_fov") from captured state; the
 	// pointers it takes are plain host pointers (see q3sdk.h syscall_t).
 	q3::syscall_t Syscall();
 

@@ -54,9 +54,9 @@ namespace
 		FakeEngine::SetSnapshotTime(1000);
 		FakeEngine::SetFovString("90");
 		FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-		FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\red", (const float[]){ 128.0f,  128.0f, 0.0f });
-		FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\blue",        (const float[]){ 128.0f, -128.0f, 0.0f });
-		FakeEngine::SetPlayer(3, "\\n\\Behind\\t\\free",       (const float[]){ -500.0f,   0.0f, 0.0f });
+		FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\1", (const float[]){ 128.0f,  128.0f, 0.0f });
+		FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\2",           (const float[]){ 128.0f, -128.0f, 0.0f });
+		FakeEngine::SetPlayer(3, "\\n\\Behind\\t\\0",          (const float[]){ -500.0f,   0.0f, 0.0f });
 
 		return NameEsp::Gather(1000, FakeEngine::Syscall());
 	}
@@ -70,15 +70,29 @@ namespace
 		return NULL;
 	}
 
-	// where the overlay should have put a centred tag for this player
+	// where the overlay should have put a centred tag for this player - the same centring plus
+	// the same on-screen clamp Draw() applies so glRasterPos stays valid (see nameEsp.cpp)
 	bool ExpectedCentre(const NameEsp::PlayerTag& tag, float& x, float& y)
 	{
 		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
 		NameEsp::ScreenPoint p;
 		if (!NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag.origin, p))
 			return false;
-		x = p.x - (kCharWidth * (float)strlen(tag.name)) * 0.5f;
+		const float textWidth = kCharWidth * (float)strlen(tag.name);
+		x = p.x - textWidth * 0.5f;
 		y = p.y;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (x + textWidth + 1.0f > (float)kVpW)
+			x = (float)kVpW - textWidth - 1.0f;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (y < 0.0f)
+			y = 0.0f;
+		if (y + 14.0f + 1.0f > (float)kVpH)   // FONT_HEIGHT, see glText.h
+			y = (float)kVpH - 14.0f - 1.0f;
+		if (y < 0.0f)
+			y = 0.0f;
 		return true;
 	}
 
