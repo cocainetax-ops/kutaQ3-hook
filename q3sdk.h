@@ -3,10 +3,10 @@
 // =============================================================================================== //
 // kutaQ3 hook - the Quake III Arena 1.32b cgame module ABI, mirrored by hand
 //
-// The NAME ESP reads the client state through the cgame module's own syscall door (see
-// cgameHook.h), so it has to agree with the engine on the exact layout of the structures that
-// cross that door: gameState_t, snapshot_t, playerState_t, entityState_t, usercmd_t, plus the
-// syscall / command numbers.
+// The NAME ESP reads the client state out of the cgame VM (see vmHook.h / vmFind.h), so it has to
+// agree with the engine on the exact layout of the structures that cross that boundary:
+// gameState_t, snapshot_t, playerState_t, entityState_t, usercmd_t, refdef_t, plus the syscall /
+// command numbers.
 //
 // SDK/ holds the authoritative 1.32b headers (GPL v2, id Software release dbe4ddb). They are
 // deliberately NOT #included here and nothing under SDK/ is listed in kutaQ3.vcxproj -
@@ -244,23 +244,53 @@ namespace q3
 	};
 
 	// ------------------------------------------------------------------------------------------
-	// syscall numbers - cgameImport_t, cg_public.h. Only the ones the ESP uses are mirrored; the
-	// values are checked against the real enum by SDK/code/client/cl_sdkmirror.c.
+	// refdef_t - cgame/tr_types.h. The view the cgame handed the renderer for this frame, and the
+	// only place the exact view origin / angles / fov the frame was rendered with exist outside
+	// the cgame module. vmHook.cpp captures it from the cgame's own CG_R_RENDERSCENE trap, which
+	// fires once per rendered frame no matter whether the cgame is bytecode or a native DLL.
+	// ------------------------------------------------------------------------------------------
+	const int kMaxRenderStrings      = 8;      // tr_types.h:MAX_RENDER_STRINGS
+	const int kMaxRenderStringLength = 32;     // tr_types.h:MAX_RENDER_STRING_LENGTH
+
+	struct refdef_t
+	{
+		int    x, y, width, height;
+		float  fov_x, fov_y;
+		vec3_t vieworg;
+		vec3_t viewaxis[3];   // transformation matrix; [0] is the forward vector
+
+		int    time;          // cg.time, i.e. the serverTime the frame was rendered for
+		int    rdflags;
+
+		byte   areamask[kMaxMapAreaBytes];
+		char   text[kMaxRenderStrings][kMaxRenderStringLength];
+	};
+
+	// ------------------------------------------------------------------------------------------
+	// syscall numbers - cgameImport_t, cg_public.h. These are the values arriving as args[0] of
+	// the engine's per-VM syscall dispatcher (CL_CgameSystemCalls), which is what vmHook.cpp
+	// detours. Only the ones the hook uses are mirrored; the values are checked against the real
+	// enum by SDK/code/client/cl_sdkmirror.cpp.
 	// ------------------------------------------------------------------------------------------
 	enum cgameImport
 	{
 		CG_MILLISECONDS               = 2,
 		CG_CVAR_VARIABLESTRINGBUFFER  = 6,
-		CG_GETGAMESTATE               = 50,
+		CG_CM_LOADMAP                 = 18,   // fired during CG_Init - the level boundary
+		CG_R_RENDERSCENE              = 44,   // args[1] = &cg.refdef, once per rendered frame
+		CG_GETGLCONFIG                = 49,
+		CG_GETGAMESTATE               = 50,   // args[1] = &cgs.gameState, once per level
 		CG_GETCURRENTSNAPSHOTNUMBER   = 51,
-		CG_GETSNAPSHOT                = 52,
+		CG_GETSNAPSHOT                = 52,   // args[1] = number, args[2] = destination
 		CG_GETCURRENTCMDNUMBER        = 54,
 		CG_GETUSERCMD                 = 55
 	};
 
 	// ------------------------------------------------------------------------------------------
-	// commands the engine sends INTO the cgame - cgameExport_t, cg_public.h. These are the values
-	// arriving as vmMain()'s first argument.
+	// commands the engine sends INTO the cgame - cgameExport_t, cg_public.h. These travel through
+	// the engine's VM_Call() and never reach the syscall dispatcher this hook detours, so nothing
+	// in the DLL switches on them any more; they are mirrored because cl_sdkmirror.cpp checks the
+	// whole cgameExport_t numbering against the engine header.
 	// ------------------------------------------------------------------------------------------
 	enum cgameExport
 	{
@@ -275,9 +305,12 @@ namespace q3
 		CG_EVENT_HANDLING     = 8
 	};
 
-	// The syscall trampoline the engine hands to the cgame through dllEntry(). The cgame calls it
-	// varargs style - syscall( CG_GET_SNAPSHOT, snapnum, snapshot_t *, sizeof( snapshot_t ) ) - so
-	// we can too. int is the 1.32 argument type (intptr_t on x86 is the same size).
+	// The syscall trampoline. The engine hands the *cgame* one of these through dllEntry() for a
+	// native VM (VM_DllSyscall in vm.c), which resolves every pointer with VM_ArgPtr() - i.e. only
+	// while the cgame VM is current. What NameEsp::Gather() gets is vmHook.cpp's bridge, which
+	// takes the same arguments but answers them from state the hook already copied out, so the
+	// pointers are plain host pointers and it works from any point in the frame. int is the 1.32
+	// argument type (intptr_t on x86 is the same size).
 	typedef int (Q3SDK_CDECL *syscall_t)(int arg, ...);
 
 	// ------------------------------------------------------------------------------------------
@@ -421,10 +454,14 @@ namespace q3
 	}
 
 	// ------------------------------------------------------------------------------------------
-	// Which loaded module is the native cgame? The engine builds "<vm>_mp_" ARCH_STRING ".dll"
+	// Which module name is a native cgame? The engine builds "<vm>_mp_" ARCH_STRING ".dll"
 	// (retail: cgame_mp_x86.dll); mod and ioquake3 builds use cgamex86.dll. Anything that is not a
 	// cgame DLL - qagame_mp_x86.dll, ui_mp_x86.dll, cgame.mpq - is rejected.
 	// Accepts a bare name or a full path.
+	//
+	// Nothing depends on a native cgame being loaded any more - vmHook.cpp hooks the VM layer, so
+	// a bytecode cgame from pak0.pk3 works exactly the same. This is only used to label the one in
+	// the menu status line when vm_cgame happens to select VMI_NATIVE.
 	// ------------------------------------------------------------------------------------------
 	inline bool IsNativeCgameModule(const char* nameOrPath)
 	{
@@ -493,6 +530,18 @@ namespace q3
 	static_assert(offsetof(gameState_t, stringOffsets) == 0, "gameState_t::stringOffsets moved");
 	static_assert(offsetof(gameState_t, stringData) == 4096, "gameState_t::stringData moved");
 	static_assert(offsetof(gameState_t, dataCount) == 20096, "gameState_t::dataCount moved");
+
+	static_assert(sizeof(refdef_t) == 368, "refdef_t does not match Q3 1.32b");
+	static_assert(offsetof(refdef_t, x) == 0, "refdef_t::x moved");
+	static_assert(offsetof(refdef_t, width) == 8, "refdef_t::width moved");
+	static_assert(offsetof(refdef_t, fov_x) == 16, "refdef_t::fov_x moved");
+	static_assert(offsetof(refdef_t, fov_y) == 20, "refdef_t::fov_y moved");
+	static_assert(offsetof(refdef_t, vieworg) == 24, "refdef_t::vieworg moved");
+	static_assert(offsetof(refdef_t, viewaxis) == 36, "refdef_t::viewaxis moved");
+	static_assert(offsetof(refdef_t, time) == 72, "refdef_t::time moved");
+	static_assert(offsetof(refdef_t, rdflags) == 76, "refdef_t::rdflags moved");
+	static_assert(offsetof(refdef_t, areamask) == 80, "refdef_t::areamask moved");
+	static_assert(offsetof(refdef_t, text) == 112, "refdef_t::text moved");
 
 	// No member of anything mirrored here is a pointer or a long, so these sizes and offsets are
 	// the same on ILP32 (retail x86 quake3.exe) and LP64. That is what lets the harness above be

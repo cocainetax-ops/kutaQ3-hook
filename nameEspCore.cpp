@@ -107,12 +107,75 @@ namespace
 	}
 
 	// --------------------------------------------------------------------------------------------
+	// Is a captured refdef_t one we can project with? It is read out of the cgame's data segment by
+	// address (vmHook.cpp), so it is checked rather than trusted - and the handedness test is what
+	// catches a wrong viewaxis convention, not just garbage:
+	//
+	//   - fov the way CG_DrawActiveFrame() clamps cg_fov, and a sane screen rectangle;
+	//   - every viewaxis row a unit vector (AnglesToAxis() normalises them);
+	//   - the triple right handed: cross(viewaxis[0], viewaxis[1]) == +viewaxis[2], measured to be
+	//     +1.000 for the engine's own AnglesToAxis(). It comes out that way because AngleVectors()
+	//     reports "right" as (0,-1,0) at zero angles and AnglesToAxis() negates it, so viewaxis[1]
+	//     is the world LEFT vector - which is what the projection below assumes when it flips the
+	//     sign to make screen x grow to the right. A renderer that handed over the un-negated right
+	//     vector would measure -1 here and mirror every tag, so it is rejected rather than trusted.
+	// --------------------------------------------------------------------------------------------
+	bool RefdefUsable(const q3::refdef_t& rd)
+	{
+		if (rd.fov_x < 1.0f || rd.fov_x > 179.0f)
+			return false;
+		if (rd.width <= 0 || rd.height <= 0 || rd.width > 8192 || rd.height > 8192)
+			return false;
+
+		for (int i = 0; i < 3; ++i)
+		{
+			const float* a = rd.viewaxis[i];
+			const float lengthSq = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+			if (!(lengthSq > 0.96f && lengthSq < 1.04f))     // also rejects NaN, which fails every compare
+				return false;
+		}
+
+		const float* f = rd.viewaxis[0];
+		const float* l = rd.viewaxis[1];
+		const float* u = rd.viewaxis[2];
+		const float cx = f[1] * l[2] - f[2] * l[1];
+		const float cy = f[2] * l[0] - f[0] * l[2];
+		const float cz = f[0] * l[1] - f[1] * l[0];
+		const float det = cx * u[0] + cy * u[1] + cz * u[2];
+		if (!(det > 0.96f && det < 1.04f))
+			return false;
+
+		for (int i = 0; i < 3; ++i)
+		{
+			if (!(rd.vieworg[i] > -1e7f && rd.vieworg[i] < 1e7f))
+				return false;
+		}
+		return true;
+	}
+
+	// --------------------------------------------------------------------------------------------
 	// The view. See the "The view" block in nameEsp.h for why each piece comes from where.
 	// --------------------------------------------------------------------------------------------
-	void BuildView(int serverTime, const q3::snapshot_t& snap, q3::syscall_t syscall, NameEsp::View& view)
+	void BuildView(int serverTime, const q3::snapshot_t& snap, q3::syscall_t syscall,
+	               const q3::refdef_t* refdef, NameEsp::View& view)
 	{
 		const q3::playerState_t& ps = snap.ps;
 		memset(&view, 0, sizeof(view));
+
+		// ---- the view the cgame actually rendered, when the VM hook captured it ----------------
+		if (refdef && RefdefUsable(*refdef))
+		{
+			for (int i = 0; i < 3; ++i)
+			{
+				view.origin[i] = refdef->vieworg[i];
+				view.axis[i][0] = refdef->viewaxis[i][0];
+				view.axis[i][1] = refdef->viewaxis[i][1];
+				view.axis[i][2] = refdef->viewaxis[i][2];
+			}
+			view.fovX  = refdef->fov_x;
+			view.valid = true;
+			return;
+		}
 
 		// ---- view angles: newest usercmd + delta_angles, i.e. PM_UpdateViewAngles() -------------
 		// PM_UpdateViewAngles() does viewangles[i] = SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]),
@@ -245,7 +308,7 @@ bool NameEsp::ParseClientInfo(const char* infoString, int clientNum, PlayerTag& 
 	return true;
 }
 
-bool NameEsp::Gather(int serverTime, q3::syscall_t syscall)
+bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* refdef)
 {
 	s_frame.valid       = false;
 	s_frame.playerCount = 0;
@@ -254,10 +317,10 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall)
 	if (!syscall)
 		return false;
 
-	// ---- the state the engine will hand over ----------------------------------------------------
-	// These are the cgame's own traps, called with the same arguments the cgame uses, so the
-	// engine's VM_ArgPtr() resolves them to the buffers below (it only does that while the cgame
-	// VM is current - which is exactly why this runs from inside vmMain).
+	// ---- the state the trampoline will hand over ------------------------------------------------
+	// Same trap numbers and arguments the cgame itself uses. What answers them is vmHook.cpp's
+	// bridge, which serves the copies its dispatcher detour took during this frame - so the
+	// pointers below are plain host pointers and this can run anywhere, not only inside a VM call.
 	int snapNumber = 0;
 	int snapServerTime = 0;
 	syscall(q3::CG_GETCURRENTSNAPSHOTNUMBER, (intptr_t)&snapNumber, (intptr_t)&snapServerTime);
@@ -271,7 +334,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall)
 	s_frame.serverTime   = serverTime;
 	s_frame.snapshotTime = s_snapshot.serverTime;
 
-	BuildView(serverTime, s_snapshot, syscall, s_frame.view);
+	BuildView(serverTime, s_snapshot, syscall, refdef, s_frame.view);
 
 	// ---- one tag per live player entity ---------------------------------------------------------
 	const int self = s_snapshot.ps.clientNum;

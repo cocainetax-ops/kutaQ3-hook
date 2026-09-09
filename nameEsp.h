@@ -9,32 +9,31 @@
 //
 // Where the data comes from
 // -------------------------
-// Not from guessed offsets in quake3.exe. The cgame module's own front door is used instead, which
-// is what cgameHook.h hooks:
+// Not from guessed offsets in quake3.exe, and not from a native cgame DLL either. vmHook.h detours
+// the engine's per-VM syscall dispatcher, which every cgame trap passes through whether the cgame
+// is the bytecode in pak0.pk3 (the retail default) or a DLL:
 //
-//   1. Detours hooks the exported vmMain() of the native cgame DLL (cgame_mp_x86.dll) and its
-//      dllEntry(), which is how the engine hands the module its syscall trampoline.
-//   2. Every CG_DRAW_ACTIVE_FRAME (once per frame, before the renderer presents) the vmMain detour
-//      calls Gather() below, still inside the VM call.
-//   3. Gather() asks the engine for the state through that trampoline, exactly the way the cgame
-//      itself does - CG_GETCURRENTSNAPSHOTNUMBER / CG_GETSNAPSHOT / CG_GETGAMESTATE /
-//      CG_GETCURRENTCMDNUMBER / CG_GETUSERCMD / CG_CVAR_VARIABLESTRINGBUFFER - and copies out what
-//      the ESP needs: the player entity positions, the configstring names and the view.
-//   4. Draw() runs later in the same frame from the SwapBuffers hook and renders the tags.
-//
-// Doing the reading inside vmMain is not a style choice. The engine resolves the pointers passed
-// to it with VM_ArgPtr(), which only returns them unchanged while the cgame VM is the current one
-// (see qcommon.h / vm.c); called from anywhere else it hands the engine a NULL snapshot pointer.
-// So: read in vmMain, draw in SwapBuffers, never the other way round.
+//   1. the dispatcher detour watches CG_GETSNAPSHOT / CG_GETGAMESTATE / CG_R_RENDERSCENE go past
+//      and copies out the player entity positions, the address of the cgame's configstrings and
+//      the refdef the frame was rendered with;
+//   2. Gather() below is called from the hooked SwapBuffers with a trampoline that answers those
+//      same trap numbers out of the copies, so it never has to be inside a VM call - which is what
+//      used to tie this feature to vmMain, and with it to vm_cgame;
+//   3. Draw() runs in the same frame, right after, and renders the tags.
 //
 // The view
 // --------
-// The cgame's refdef is a private global inside the cgame module, so the view the renderer used is
-// rebuilt here from data the syscalls do expose:
+// Preferred source is the refdef_t the cgame handed the renderer (CG_R_RENDERSCENE), captured by
+// vmHook.cpp: the exact vieworg, viewaxis and fov_x the frame was drawn with. It is only used once
+// it passes a shape check (see RefdefUsable below), because it is read out of the cgame's data
+// segment by address.
+//
+// Without a refdef - no VM hook, or a captured one that fails the check - the view is rebuilt from
+// what the traps expose:
 //
 //   - angles: the newest usercmd (CG_GETUSERCMD) plus playerState_t::delta_angles - the same
-//     SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]) the engine's PM_UpdateViewAngles() does,
-//     so the tags track the mouse exactly instead of lagging by the snapshot age;
+//     SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]) the engine's PM_UpdateViewAngles() does -
+//     falling back to the snapshot's own viewangles;
 //   - origin: playerState_t::origin of the newest snapshot, pushed forward by velocity for the age
 //     of that snapshot (clamped to 250 ms). Client side prediction is not re-implemented, so this
 //     is accurate to a few units rather than exact;
@@ -110,9 +109,11 @@ namespace NameEsp
 	// (feature off, no cgame attached, not connected, no snapshot yet).
 	const Frame& Current();
 
-	// Called from the cgame vmMain detour on CG_DRAW_ACTIVE_FRAME, on the game thread.
+	// Called from the hooked SwapBuffers, on the game thread, just before Draw(). syscall is
+	// vmHook.cpp's trampoline (or NULL, which gathers nothing); refdef is the view the cgame
+	// rendered this frame when the VM hook captured one, else NULL.
 	// Returns false (and leaves Current() invalid) when there is nothing usable to read.
-	bool Gather(int serverTime, q3::syscall_t syscall);
+	bool Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* refdef = NULL);
 
 	// Drop the frame and the per-client smoothing history: the cgame shut down or was unloaded, so
 	// the last gathered data is about a level that no longer exists.

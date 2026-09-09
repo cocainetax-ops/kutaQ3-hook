@@ -284,7 +284,7 @@ bool Config::Save()
 	file << "ChamsEnabled=" << (s.chamsEnabled ? 1 : 0) << "\n";
 	file << "ChamsStyle=" << s.chamsStyle << "          ; 0 = solid, 1 = wireframe\n";
 	file << "NeonEnabled=" << (s.neonEnabled ? 1 : 0) << "        ; 1 = neon bloom chams override the style above\n";
-	file << "NameEspEnabled=" << (s.nameEsp ? 1 : 0) << "     ; 1 = player names on screen (needs the cgame vmMain hook)\n";
+	file << "NameEspEnabled=" << (s.nameEsp ? 1 : 0) << "     ; 1 = player names on screen (reads the cgame VM directly)\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
 	file.close();
 

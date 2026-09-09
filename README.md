@@ -3,11 +3,11 @@
 OpenGL hook DLL for Quake III Arena with a Dear ImGui in-game menu.
 
 The DLL hooks `SwapBuffers` (with a `wglSwapBuffers` fallback), `glBindTexture`, `glDrawElements`,
-`glVertexPointer`, `CreateWindowExA`, `LoadLibraryExA` / `LoadLibraryA` and - once the native cgame
-module is mapped - that module's exported `vmMain` and `dllEntry` with Microsoft Detours. The **"kutaQ3 hook"** menu
-is rendered on top of the game every frame using Dear ImGui (the bloat-free immediate mode
-GUI for C++) with the fixed-function OpenGL2 backend (`imgui/imgui_impl_opengl2.cpp` +
-`imgui/imgui_impl_opengl2.h`), which fits Quake 3's legacy GL context.
+`glVertexPointer`, `CreateWindowExA` and - inside `quake3.exe` itself - the cgame VM's syscall
+dispatcher, with Microsoft Detours. The **"kutaQ3 hook"** menu is rendered on top of the game every
+frame using Dear ImGui (the bloat-free immediate mode GUI for C++) with the fixed-function OpenGL2
+backend (`imgui/imgui_impl_opengl2.cpp` + `imgui/imgui_impl_opengl2.h`), which fits Quake 3's legacy
+GL context.
 
 ## Legacy DirectInput mouse routing (in_mouse 1)
 
@@ -85,60 +85,148 @@ While a guard is alive, `GL::LegacyStateGuard::IsActive()` is true and the hooke
 no shader sniffing). Multitexture / buffer / program entry points are resolved lazily through
 `wglGetProcAddress` and simply skipped on a pure GL 1.1 context.
 
-## NAME ESP and the cgame vmMain hook
+## NAME ESP and the cgame VM hook
 
 Player names above every other player's head, through walls, drawn with the `GL::Font`
 display-list text renderer in `glText.h` / `glText.cpp`. Toggled with the **Name ESP
 (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in `kutaQ3.cfg`); the colour is the
 team from the clientinfo, and a tag clamped to the screen edge is dimmed.
 
-None of it reads guessed offsets out of `quake3.exe`. Quake 3 keeps everything the ESP needs
-behind the cgame module boundary, and that boundary is two exported functions - which is
-exactly what `cgameHook.h` / `cgameHook.cpp` detour:
+It works on a stock install. No `vm_cgame`, no cgame DLL, no module to wait for.
 
-- `dllEntry( int (QDECL *dllSyscall)(int arg, ...) )` - how the engine hands the cgame its
-  **syscall trampoline**. Capturing that pointer is the whole trick: it is the supported way to
-  ask the engine for the client's own state, and it is what the cgame's own `trap_*` wrappers
-  call.
-- `vmMain( int command, int arg0 ... )` - every call into the cgame. `CG_INIT` / `CG_SHUTDOWN`
-  mark level load and unload; `CG_DRAW_ACTIVE_FRAME` fires once per rendered frame and carries
-  `cl.serverTime`, so it is where the ESP gathers its data.
+### Why it does not hook a cgame module
 
-The hooks go on the module's exports (`GetProcAddress(hCgame, "vmMain")` -> `DetourAttach`), so
-there is nothing to signature scan. `main.cpp`'s `LoadLibraryExA` / `LoadLibraryA` detours attach
-the moment `cgame_mp_x86.dll` (retail) or `cgamex86.dll` (mod / ioquake3) is mapped - which has to
-be immediate, because the engine calls `dllEntry` before it ever sends `CG_INIT`. `CGame::Poll()`,
-run from the SwapBuffers hook, notices the engine unloading the module on disconnect and hooks the
-next one; an already-unmapped module is abandoned rather than detached, since patching the
-trampoline back would write into freed memory.
+Retail Quake 3 does not load one. `CL_InitCGame()` picks an interpreter and creates a VM
+(`SDK/code/client/cl_cgame.c:732`):
 
-Reading state through the trampoline only works **inside** a VM call: the engine resolves the
-pointers it is handed with `VM_ArgPtr()`, which passes them straight through while the cgame VM is
-the current one and hands back NULL otherwise. So the split is fixed -
+```c
+// load the dll or bytecode
+if ( cl_connectedToPureServer != 0 ) {
+    // if sv_pure is set we only allow qvms to be loaded
+    interpret = VMI_COMPILED;
+}
+else {
+    interpret = Cvar_VariableValue( "vm_cgame" );
+}
+cgvm = VM_Create( "cgame", CL_CgameSystemCalls, interpret );
+```
 
-1. `vmMain(CG_DRAW_ACTIVE_FRAME)` -> `NameEsp::Gather()` asks for
-   `CG_GETCURRENTSNAPSHOTNUMBER` / `CG_GETSNAPSHOT` / `CG_GETGAMESTATE` /
-   `CG_GETCURRENTCMDNUMBER` / `CG_GETUSERCMD` / `CG_CVAR_VARIABLESTRINGBUFFER`, and copies out
-   the player entity positions, the `CS_PLAYERS` configstring names and the view;
-2. the hooked `SwapBuffers` -> `NameEsp::Draw()` projects and renders that frame with `GL::Font`.
+Three things follow, all of them checkable in the sources under `SDK/` and in the GPL 1.32b
+release:
 
-The structures crossing that door are mirrored by hand in `q3sdk.h` (the GPL headers in `SDK/` stay
-out of the build - see `SDK/README.md`), and `SDK/code/client/cl_sdkmirror.cpp` asserts every
-mirrored size, offset and syscall number against the real 1.32b headers.
+- `vmInterpret_t` is `{ VMI_NATIVE, VMI_BYTECODE, VMI_COMPILED }` (`qcommon.h:289`), so a **native
+  DLL cgame is `vm_cgame 0`, not 1** - `1` is the *interpreted* bytecode VM.
+- `VM_Init()` defaults the cvar to `"2"` (`vm.c`, *"!@# SHIP WITH SET TO 2"*), i.e. the JIT
+  bytecode VM. That is what a stock client runs: `vm/cgame.mp.qvm` out of `baseq3/pak0.pk3`,
+  loaded into `quake3.exe` and executed there. There is no `vmMain` export and no `dllEntry` to
+  hook, because there is no module.
+- On a pure server the engine **ignores `vm_cgame` entirely** and forces `VMI_COMPILED`, so even
+  setting the cvar cannot produce a DLL cgame there. (`sv_pure` is documented as defaulting to 1.)
 
-The view is rebuilt rather than stolen: the cgame's `refdef` is private to the cgame module, so the
-angles come from the newest `usercmd_t` plus `playerState_t::delta_angles` (the same
-`SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i])` the engine's `PM_UpdateViewAngles()` does), the
-origin from the snapshot's `playerState_t::origin` pushed forward by that snapshot's age, `fov_x`
-from `cg_fov`, and `fov_y` plus the screen rectangle from the GL viewport at draw time. Remote
-players' positions are carried forward the same way, using the velocity implied by the previous
-snapshot, so a moving player's tag does not sit a snapshot behind them.
+`VM_Create()` only reaches `Sys_LoadDll()` for `VMI_NATIVE`, and falls back to the QVM if that
+fails. So a native cgame is a real thing - mods ship `cgamex86.dll`, retail would load
+`cgame_mp_x86.dll` - it is just never the default, and never on a pure server. A hook that needs
+it needs the user to change a cvar and silently does nothing otherwise.
 
-> **Needs a native cgame.** `vmMain` is a real function only in a DLL cgame (`vm_cgame 1`). With
-> the interpreted default (`vm_cgame 0`) the cgame is bytecode inside `quake3.exe` and there is no
-> `vmMain` to hook: the menu then reads *"cgame: no cgame VM loaded"* and the ESP draws nothing.
-> Injecting after the map has loaded also misses `dllEntry`, which the status line reports the same
-> way - reconnecting or loading another map fixes it.
+### What it hooks instead
+
+Every call the cgame makes into the engine funnels through one function pointer the engine stored
+in the VM record when it created it (`vm.c`, `vm_local.h:130`):
+
+```c
+vm->systemCall = systemCalls;      // CL_CgameSystemCalls for the cgame
+```
+
+The interpreter calls it directly for a bytecode VM; a native DLL reaches the same pointer through
+`VM_DllSyscall()` (`return currentVM->systemCall(&arg)`). **One Detours hook on that address covers
+both**, and because it is engine code in `quake3.exe` it is never unmapped - the hook survives map
+changes and reconnects, and can always be cleanly detached. (The old design detoured the exports of
+a cgame DLL, which meant racing `LoadLibrary`, and abandoning rather than detaching the trampoline
+once the engine freed the module. Neither problem exists any more, and the `LoadLibraryExA` /
+`LoadLibraryA` hooks are gone.)
+
+`vmFind.h` / `vmFind.cpp` locate the `vm_t` without hardcoding an address. `vmTable[]` is a static
+array inside the executable, so the writable sections of the main module are scanned for a record
+matching every invariant `VM_Create()` leaves behind at once: `name == "cgame"`, `systemCall`
+inside the module, and - for a bytecode VM - `dataMask == (1<<n)-1`, `programStack == dataMask+1`,
+`stackBottom == programStack - STACK_SIZE`. The first two `vm_t` fields are ABI-locked by the
+engine itself (`VM_OFFSET_PROGRAM_STACK 0` / `VM_OFFSET_SYSTEM_CALL 4`, because the x86 interpreter
+is written in assembly).
+
+The detour then watches the cgame's own traps and keeps what the ESP needs. Nothing in it calls
+back into the engine, so none of it depends on being inside a VM call - which is the constraint
+that used to force the read into `vmMain`:
+
+| trap | what the hook takes |
+|---|---|
+| `CG_GETSNAPSHOT` | the snapshot the engine just copied into the cgame's buffer: player entity positions + the local `playerState_t` |
+| `CG_GETGAMESTATE` | the address of the cgame's `cgs.gameState`, read live for the `CS_PLAYERS` configstrings |
+| `CG_R_RENDERSCENE` | the `refdef_t` the cgame rendered this frame: the exact `vieworg`, `viewaxis` and `fov_x` |
+| `CG_CM_LOADMAP` | level boundary - everything captured so far is dropped |
+
+`NameEsp::Gather()` is handed a trampoline (`Vm::Syscall()`) that answers those same trap numbers
+out of the copies, so the portable half of the ESP is unchanged. Pointers resolve the way
+`VM_ArgPtr()` resolves them (`vm.c`): a native VM passes real host pointers and has `dataBase` 0, a
+bytecode VM passes offsets that get masked into its hunk segment.
+
+### Every `vm_cgame` value, including the one you never set
+
+The three values are `VMI_NATIVE 0` / `VMI_BYTECODE 1` / `VMI_COMPILED 2`, and all three work. `1`
+and `2` both take the same QVM path through `VM_Create()`, which allocates the data segment and sets
+`dataMask` / `programStack` / `stackBottom` **after** choosing who fills in `codeBase`:
+
+```c
+if ( interpret >= VMI_COMPILED ) {
+    VM_Compile( vm, header );              // vm_cgame 2 - emit x86
+} else {
+    VM_PrepareInterpreter( vm, header );   // vm_cgame 1 - translate the opcode stream
+}
+vm->programStack = vm->dataMask + 1;
+vm->stackBottom  = vm->programStack - STACK_SIZE;
+```
+
+So the two records differ only in the mode flags and in what the code fields describe:
+`VM_Compile()` ends with `vm->codeLength = compiledOfs;` and `Hunk_Alloc( compiledOfs, h_low )`,
+while `VM_PrepareInterpreter()` leaves `codeLength` at `header->codeLength` and does
+`vm->codeBase = Hunk_Alloc( vm->codeLength*4, h_high )`. Neither is part of the acceptance test -
+both satisfy `codeBase != 0` and `codeLength > 0`, and both modes reach the traps through the same
+pointer: `vm_interpreted.c` calls `vm->systemCall( (int *)&image[programStack+4] )` from
+`VM_CallInterpreted()`, and `vm_x86.c` emits `currentVM->systemCall( ... )` in `AsmCall`, a field
+load rather than an address baked in at compile time. `tests/test_vmfind.cpp` pins this: records
+shaped for `1`, `2` and `0` are each accepted, `compiled` and `currentlyInterpreting` are flipped
+without changing the outcome, and the shared invariants still reject a bad record in either mode.
+The status line in the menu reports which one it found.
+
+Injecting into a map that is already running works too: `CG_GETGAMESTATE` only fires in `CG_Init`,
+so on a late inject the cgame's `gameState_t` copy is found by scanning its data segment for one -
+1024 strictly increasing string offsets inside the pool, a serverinfo with a `mapname`, at least one
+`CS_PLAYERS` infostring.
+
+### The view
+
+`refdef_t` is preferred: it is the view the frame was actually drawn with. It is only used once it
+passes a shape check (`RefdefUsable` in `nameEspCore.cpp`), because it is read out of the cgame's
+data segment by address. That check measures the handedness of `viewaxis` rather than assuming it:
+`AnglesToAxis()` gives a **right-handed** triple (`cross(viewaxis[0], viewaxis[1]) == +viewaxis[2]`,
+measured 1.000 against `SDK/code/game/q_math.c`), because `AngleVectors()` reports *right* as
+`(0,-1,0)` at zero angles and `AnglesToAxis()` negates it - so `viewaxis[1]` is the world LEFT
+vector, which is what the projection relies on when it flips the sign to make screen x grow right.
+A renderer that handed over the un-negated vector would measure -1 and be rejected instead of
+mirroring every tag.
+
+Without a refdef the view is rebuilt the way it always was: the newest `usercmd_t` plus
+`playerState_t::delta_angles` (the engine's `PM_UpdateViewAngles()`), the snapshot origin pushed
+forward by the snapshot's age, `cg_fov` for `fov_x`, and `fov_y` plus the screen rectangle from the
+GL viewport at draw time.
+
+Remote players' positions are smoothed the same way the engine interpolates entities: the previous
+snapshot's sample is kept per client and the resulting velocity carries the tag forward to the
+current frame, so a moving player's tag does not sit a snapshot behind them.
+
+The structures crossing that boundary are mirrored by hand in `q3sdk.h` and `vmFind.h` (the GPL
+headers in `SDK/` stay out of the build - see `SDK/README.md`), and
+`SDK/code/client/cl_sdkmirror.cpp` asserts every mirrored size, offset and syscall number against
+the real 1.32b headers.
 
 ## Features
 
@@ -155,7 +243,7 @@ snapshot, so a moving player's tag does not sit a snapshot behind them.
 - **NAME ESP** (`nameEsp.h`) - every other player's name drawn above their head through walls,
   in their team colour, with a 1px drop shadow so it stays readable on any background.
   Toggled with the **Name ESP (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in
-  `kutaQ3.cfg`), driven by the cgame `vmMain` hook described above. Your own name is not drawn,
+  `kutaQ3.cfg`), driven by the cgame VM hook described above. Your own name is not drawn,
   dead players (corpses) are skipped, and tags for players outside the frustum are clamped to
   the screen edge and dimmed.
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
@@ -195,7 +283,7 @@ Use **Save settings** / **Load settings** in the menu, or edit `kutaQ3.cfg` by h
 ChamsEnabled=1
 ChamsStyle=0          ; 0 = solid, 1 = wireframe
 NeonEnabled=0         ; 1 = neon bloom chams override the style above
-NameEspEnabled=1      ; 1 = player names on screen (needs the cgame vmMain hook)
+NameEspEnabled=1      ; 1 = player names on screen (reads the cgame VM directly)
 LogShaders=1
 ```
 
@@ -207,8 +295,8 @@ until the docking branch is used; the same `kutaQ3_imgui.ini` path will then inc
 
 ## Tests
 
-The DLL is a Win32/MSVC build, so it cannot be compiled on a Linux host - but the parts of the
-NAME ESP that do not need Windows can be, and are:
+The DLL is a Win32/MSVC build, so it cannot be linked on a Linux host - but everything in the
+NAME ESP and the VM hook that is not Win32 API can be compiled and run here, and is:
 
 ```
 make -C tests check
@@ -216,11 +304,24 @@ make -C tests check
 
 | target | what it runs |
 |---|---|
-| `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h` as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild, the smoothing, and the projection - checked against the engine's own `AngleVectors()` compiled out of `SDK/code/game/q_math.c`. |
+| `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing, and the projection - checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject. |
 | `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours and strings actually issued for a frame can be asserted on. |
+| `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.
+
+Two things this host genuinely cannot check, so they are not quietly assumed to be fine:
+
+- **The `vm_t` field offsets behind `vm_t::name`.** `struct vm_s` is full of pointers, so on an
+  LP64 host the engine's copy is wider than the x86-only mirror and only the ABI-locked first two
+  fields compare (`VM_OFFSET_PROGRAM_STACK` / `VM_OFFSET_SYSTEM_CALL`, which the mirror is asserted
+  against on any host). The full field-by-field comparison is inside `#if UINTPTR_MAX == 0xffffffff`
+  in `cl_sdkmirror.cpp`, so an x86 build of the harness checks all of it. This sandbox has no 32-bit
+  libc headers (`g++ -m32` cannot include `<stdint.h>`), so that block does not run here.
+- **`vmHook.cpp` against a real `quake3.exe`.** The scanners and the trap decoding are unit-tested;
+  that they match the shipped 1.32b binary is the one thing that needs the game.
 
 ## Third-party
 
