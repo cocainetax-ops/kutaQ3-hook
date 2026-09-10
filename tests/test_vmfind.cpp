@@ -102,16 +102,46 @@ namespace
 	void MakeGameState(q3::gameState_t& gs, bool withPlayers = true, bool withMapname = true)
 	{
 		memset(&gs, 0, sizeof(gs));
-		gs.dataCount = 1;                                  // stringData[0] = 0
+		gs.dataCount = 1;                         // stringData[0] = 0
+
+		// index 0 is always CS_SERVERINFO and is the very first string appended, so its
+		// offset is 1 - the invariant GameStateLooksLive() keys on.
+		AddConfigString(gs, 0, withMapname ? "\\mapname\\q3dm1\\g_gametype\\0\\sv_hostname\\test"
+		                                   : "\\hostname\\test");
+		AddConfigString(gs, 6, "\\protocol\\68");
+
+		for (int i = 0; i < 4; ++i)              // inline models: *1..*4 at CS_MODELS (32)
+		{
+			char model[16];
+			snprintf(model, sizeof(model), "*%d", i + 1);
+			AddConfigString(gs, q3::kCsModels + i, model);
+		}
+		AddConfigString(gs, q3::kCsSounds + 0, "sound/world/alarmlp1.wav");
+		AddConfigString(gs, q3::kCsSounds + 1, "sound/player/footsteps/step1.wav");
+
+		if (withPlayers)
+		{
+			AddConfigString(gs, q3::kCsPlayers + 1, "\\n\\Bitterman\\t\\1\\model\\sarge");
+			AddConfigString(gs, q3::kCsPlayers + 3, "\\n\\Keel\\t\\2\\model\\keel");
+		}
+		// every other slot stays at offset 0, as it does in the engine for configstrings the
+		// server never set
+	}
+
+	// The (unrealistic) fully packed pattern every older test assumed: all 1024 slots set and
+	// strictly increasing. The scanner must keep accepting this too - the fix was to legalise
+	// zero gaps, not to require them.
+	void MakeFullyPackedGameState(q3::gameState_t& gs)
+	{
+		memset(&gs, 0, sizeof(gs));
+		gs.dataCount = 1;
 		for (int i = 0; i < q3::kMaxConfigStrings; ++i)
 		{
-			const char* value = "";
+			char value[40];
 			if (i == 0)
-				value = withMapname ? "\\mapname\\q3dm1\\g_gametype\\0" : "\\hostname\\test";
-			else if (withPlayers && i == q3::kCsPlayers + 1)
-				value = "\\n\\Bitterman\\t\\red\\model\\sarge";
-			else if (withPlayers && i == q3::kCsPlayers + 3)
-				value = "\\n\\Keel\\t\\blue\\model\\keel";
+				snprintf(value, sizeof(value), "\\mapname\\q3dm1\\i\\%d", i);
+			else
+				snprintf(value, sizeof(value), "\\k\\v%d", i);
 			AddConfigString(gs, i, value);
 		}
 	}
@@ -315,9 +345,12 @@ static void TestFindGameState()
 {
 	Section("VmFind::FindGameState - the cgame's configstrings");
 
+	// A real gamestate is sparse: only a handful of the 1024 indices are ever set and the rest
+	// stay at offset 0. The scanner used to reject every zero gap, which meant the cgame's
+	// copy was never found and the ESP waited for the first runtime "cs" command (~a minute).
 	static q3::gameState_t gs;
 	MakeGameState(gs);
-	CHECK_TRUE(VmFind::GameStateLooksLive(&gs), "the gameState we built looks live");
+	CHECK_TRUE(VmFind::GameStateLooksLive(&gs), "the sparse gameState we built looks live");
 
 	static unsigned char segment[1u << 20];
 	const size_t placedAt = 777 * 1024;
@@ -326,7 +359,8 @@ static void TestFindGameState()
 	memcpy(segment + placedAt, &gs, sizeof(gs));
 
 	const q3::gameState_t* found = NULL;
-	CHECK_TRUE(VmFind::FindGameState(segment, sizeof(segment), &found), "the copy is found");
+	CHECK_TRUE(VmFind::FindGameState(segment, sizeof(segment), &found),
+	           "a realistic, sparse gameState is found (the ~1-minute regression)");
 	CHECK_TRUE(found == (const q3::gameState_t*)(segment + placedAt), "found where it was placed");
 
 	// the names the ESP needs are reachable through it
@@ -334,6 +368,12 @@ static void TestFindGameState()
 	CHECK_TRUE(q3::InfoValueForKey(q3::ConfigString(found, q3::kCsPlayers + 1), "n", name, sizeof(name)),
 	           "CS_PLAYERS+1 carries a name");
 	CHECK_STR(name, "Bitterman", "and it is the one we wrote");
+
+	// the densely packed (impossible-in-practice) pattern is still accepted
+	static q3::gameState_t dense;
+	MakeFullyPackedGameState(dense);
+	found = NULL;
+	CHECK_TRUE(VmFind::FindGameState(&dense, sizeof(dense), &found), "a fully packed table is accepted too");
 
 	// ---- corruptions ---------------------------------------------------------------------------
 	q3::gameState_t bad = gs;
@@ -347,10 +387,26 @@ static void TestFindGameState()
 	CHECK_TRUE(!VmFind::GameStateLooksLive(&bad), "stringOffsets[0] must be 1");
 	CHECK_TRUE(!VmFind::GameStateLooksLive(NULL), "NULL is not live");
 
+	// two SET slots sharing an offset: the packed order is broken
 	bad = gs;
-	bad.stringOffsets[400] = bad.stringOffsets[399];   // no longer strictly increasing
+	bad.stringOffsets[q3::kCsSounds + 1] = bad.stringOffsets[q3::kCsSounds + 0];
 	found = NULL;
-	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found), "a flat offset table is rejected");
+	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found),
+	           "duplicate offsets among set slots are rejected");
+
+	// a set slot pointing outside the used pool
+	bad = gs;
+	bad.stringOffsets[q3::kCsModels + 2] = 999999;
+	found = NULL;
+	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found),
+	           "a set offset past dataCount is rejected");
+
+	// a set slot out of order (appended strings must be ascending by index)
+	bad = gs;
+	bad.stringOffsets[q3::kCsSounds + 1] = bad.stringOffsets[q3::kCsModels + 0];
+	found = NULL;
+	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found),
+	           "a non-monotonic set offset is rejected");
 
 	bad = gs;
 	MakeGameState(bad, true, false);                   // serverinfo without mapname
