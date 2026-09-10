@@ -265,8 +265,9 @@ namespace q3
 	// refdef_t - cgame/tr_types.h. The view the cgame handed the renderer for this frame, and the
 	// only place the exact view origin / angles / fov the frame was rendered with exist outside
 	// the cgame module. vmHook.cpp captures it from the cgame's own CG_R_RENDERSCENE trap, which
-	// fires once per rendered frame no matter whether the cgame is bytecode or a native DLL.
+	// may also fire for HUD models, whether the cgame is bytecode or a native DLL.
 	// ------------------------------------------------------------------------------------------
+	const int kRdfNoWorldModel       = 1;      // tr_types.h:RDF_NOWORLDMODEL
 	const int kMaxRenderStrings      = 8;      // tr_types.h:MAX_RENDER_STRINGS
 	const int kMaxRenderStringLength = 32;     // tr_types.h:MAX_RENDER_STRING_LENGTH
 
@@ -295,7 +296,7 @@ namespace q3
 		CG_MILLISECONDS               = 2,
 		CG_CVAR_VARIABLESTRINGBUFFER  = 6,
 		CG_CM_LOADMAP                 = 18,   // fired during CG_Init - the level boundary
-		CG_R_RENDERSCENE              = 44,   // args[1] = &cg.refdef, once per rendered frame
+		CG_R_RENDERSCENE              = 44,   // args[1] = refdef (world or HUD model scene)
 		CG_GETGLCONFIG                = 49,
 		CG_GETGAMESTATE               = 50,   // args[1] = &cgs.gameState, once per level
 		CG_GETCURRENTSNAPSHOTNUMBER   = 51,

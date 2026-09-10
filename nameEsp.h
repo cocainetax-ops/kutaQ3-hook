@@ -136,6 +136,10 @@ namespace NameEsp
 	// vmHook.cpp's trampoline (or NULL, which gathers nothing); refdef is the view the cgame
 	// rendered this frame when the VM hook captured one, else NULL.
 	// Returns false (and leaves Current() invalid) when there is nothing usable to read.
+	// Keep only a usable world camera. HUD/model scenes leave captured unchanged.
+	// Shared with the VM dispatcher so capture ordering is testable without Windows.
+	bool CaptureWorldRefdef(const q3::refdef_t& candidate, q3::refdef_t& captured);
+
 	bool Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* refdef = NULL);
 
 	// Drop the frame and the per-client smoothing history: the cgame shut down or was unloaded, so

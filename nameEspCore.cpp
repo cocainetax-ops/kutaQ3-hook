@@ -122,7 +122,9 @@ namespace
 	// --------------------------------------------------------------------------------------------
 	bool RefdefUsable(const q3::refdef_t& rd)
 	{
-		if (rd.fov_x < 1.0f || rd.fov_x > 179.0f)
+		if (rd.rdflags & q3::kRdfNoWorldModel)
+			return false;                        // HUD icons are not the world camera
+		if (!(rd.fov_x >= 1.0f && rd.fov_x <= 179.0f))
 			return false;
 		if (rd.width <= 0 || rd.height <= 0 || rd.width > 8192 || rd.height > 8192)
 			return false;
@@ -155,7 +157,7 @@ namespace
 
 	// --------------------------------------------------------------------------------------------
 	// Freshness, the partner of the shape check above: is a captured refdef the view THIS frame
-	// was rendered with? R_RenderScene fires once per rendered frame and the snapshot the tags
+	// was rendered with? The captured world R_RenderScene supplies the view and the snapshot the tags
 	// come from is the newest captured one, so a refdef older than that snapshot means the
 	// captures stopped arriving while snapshots kept flowing - a frozen camera. Projecting
 	// through it pins every tag to the edge (the world moved on, the camera did not), so past
@@ -318,6 +320,14 @@ namespace
 }
 
 // =============================================================================================== //
+
+bool NameEsp::CaptureWorldRefdef(const q3::refdef_t& candidate, q3::refdef_t& captured)
+{
+	if (!RefdefUsable(candidate))
+		return false;
+	captured = candidate;
+	return true;
+}
 
 const NameEsp::Frame& NameEsp::Current()
 {

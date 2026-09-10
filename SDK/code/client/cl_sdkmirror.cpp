@@ -118,6 +118,7 @@ CHECK_OFFSET(gameState_t, stringData);
 CHECK_OFFSET(gameState_t, dataCount);
 
 /* the view the cgame hands the renderer - vmHook.cpp captures it, NameEsp projects with it */
+static_assert(q3::kRdfNoWorldModel == RDF_NOWORLDMODEL, "RDF_NOWORLDMODEL mismatch");
 CHECK_OFFSET(refdef_t, x);
 CHECK_OFFSET(refdef_t, y);
 CHECK_OFFSET(refdef_t, width);

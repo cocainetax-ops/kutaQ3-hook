@@ -809,6 +809,49 @@ static void TestProjection()
 	}
 }
 
+static void TestWorldThenHudCapture()
+{
+	Section("world camera survives active-play HUD render scenes");
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	const float origin[3] = { 1000.0f, 2000.0f, 0.0f };
+	const float zero[3] = { 0.0f, 0.0f, 0.0f };
+	const float eye[3] = { 1000.0f, 2000.0f, 26.0f };
+	const float enemy[3] = { 1500.0f, 2000.0f, 0.0f };
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, zero, zero, 26);
+	FakeEngine::SetPlayer(0, "\\n\\Self\\t\\0", origin);
+	FakeEngine::SetPlayer(1, "\\n\\Enemy\\t\\0", enemy);
+
+	q3::refdef_t world, hud, captured = {};
+	MakeRefdef(world, eye, zero, 90.0f);
+	MakeRefdef(hud, zero, zero, 30.0f);
+	hud.width = hud.height = 32;
+	hud.rdflags = q3::kRdfNoWorldModel | 4; // bit test, not equality
+	hud.time = world.time + 10;
+	CHECK_TRUE(!NameEsp::CaptureWorldRefdef(hud, captured), "HUD-only frame cannot initialise world capture");
+	CHECK_TRUE(captured.width == 0, "rejected capture leaves destination untouched");
+	CHECK_TRUE(NameEsp::CaptureWorldRefdef(world, captured), "spectator/world scene captured");
+	for (int i = 0; i < 3; ++i)
+		CHECK_TRUE(!NameEsp::CaptureWorldRefdef(hud, captured), "active HUD model does not replace camera");
+	CHECK_TRUE(memcmp(&world, &captured, sizeof(world)) == 0, "world camera and frame time preserved exactly");
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &captured), "gather after world plus HUD");
+	CHECK_TRUE(NameEsp::Current().usedRefdef, "uses retained world camera");
+	CHECK_TRUE(NameEsp::Current().playerCount == 1, "self skip keeps the following opponent");
+	NameEsp::ScreenPoint point;
+	const NameEsp::Viewport vp = { 0, 0, 800, 600 };
+	CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp,
+	           NameEsp::Current().players[0].origin, point) && point.inView,
+	           "opponent remains on screen after HUD renders");
+	CHECK_NEAR(point.x, 400.0f, 0.01, "opponent centred using world camera");
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &hud), "HUD passed directly still allows fallback");
+	CHECK_TRUE(!NameEsp::Current().usedRefdef, "defensive view check rejects HUD camera");
+	world.vieworg[0] += 20.0f;
+	world.time += 16;
+	CHECK_TRUE(NameEsp::CaptureWorldRefdef(world, captured), "next world frame refreshes capture");
+	CHECK_NEAR(captured.vieworg[0], world.vieworg[0], 0.001, "camera is not frozen by HUD rejection");
+}
+
 static void TestTeamColors()
 {
 	Section("NameEsp::TeamColor");
@@ -846,6 +889,7 @@ int main(void)
 	TestReset();
 	TestProjection();
 	TestTeamColors();
+	TestWorldThenHudCapture();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;
