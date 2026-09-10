@@ -215,13 +215,28 @@ A renderer that handed over the un-negated vector would measure -1 and be reject
 mirroring every tag.
 
 Without a refdef the view is rebuilt the way it always was: the newest `usercmd_t` plus
-`playerState_t::delta_angles` (the engine's `PM_UpdateViewAngles()`), the snapshot origin pushed
-forward by the snapshot's age, `cg_fov` for `fov_x`, and `fov_y` plus the screen rectangle from the
-GL viewport at draw time.
+`playerState_t::delta_angles` (the engine's `PM_UpdateViewAngles()`, including its frozen view
+while dead-and-playing or in intermission and its +/-87.9 degree pitch clamp), the snapshot
+origin pushed forward by the snapshot's age, `cg_fov` for `fov_x`, and `fov_y` plus the screen
+rectangle from the GL viewport at draw time.
 
 Remote players' positions are smoothed the same way the engine interpolates entities: the previous
 snapshot's sample is kept per client and the resulting velocity carries the tag forward to the
-current frame, so a moving player's tag does not sit a snapshot behind them.
+current frame, so a moving player's tag does not sit a snapshot behind them. If the smoothing
+overshoots to behind the viewer while the snapshot position is still in front (a fast player
+running at the camera on an old snapshot), the tag falls back to the raw snapshot position
+rather than vanishing.
+
+### What the server sends you (PVS)
+
+A tag can only be drawn for a player the server put in your snapshot, and the server only sends
+entities in your *potentially visible set* - roughly, the parts of the map your client could
+currently see. A spectator floating above the map is in sight of nearly everything and gets a
+snapshot full of players; a player down in a corridor only gets whoever shares their PVS. That
+is not the ESP failing: "snapshot ok, 0 other players in it" in the menu means exactly this -
+there is nobody nearby to draw, and nobody's position to draw them at. The flip side is that a
+tag for a player behind a wall only appears while that wall's far side is still in your PVS;
+"through walls" reaches exactly as far as the server's visibility reaches, on any client.
 
 The structures crossing that boundary are mirrored by hand in `q3sdk.h` and `vmFind.h` (the GPL
 headers in `SDK/` stay out of the build - see `SDK/README.md`), and
@@ -245,7 +260,8 @@ the real 1.32b headers.
   Toggled with the **Name ESP (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in
   `kutaQ3.cfg`), driven by the cgame VM hook described above. Your own name is not drawn,
   dead players (corpses) are skipped, and tags for players outside the frustum are clamped to
-  the screen edge and dimmed.
+  the screen edge and dimmed. Up close, where aiming up or down would push the above-the-head
+  anchor off the screen while the player is still visible, the tag re-anchors to the chest.
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu

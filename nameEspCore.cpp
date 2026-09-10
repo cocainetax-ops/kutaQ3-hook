@@ -157,10 +157,11 @@ namespace
 	// The view. See the "The view" block in nameEsp.h for why each piece comes from where.
 	// --------------------------------------------------------------------------------------------
 	void BuildView(int serverTime, const q3::snapshot_t& snap, q3::syscall_t syscall,
-	               const q3::refdef_t* refdef, NameEsp::View& view)
+	               const q3::refdef_t* refdef, NameEsp::View& view, bool& usedRefdef)
 	{
 		const q3::playerState_t& ps = snap.ps;
 		memset(&view, 0, sizeof(view));
+		usedRefdef = false;
 
 		// ---- the view the cgame actually rendered, when the VM hook captured it ----------------
 		if (refdef && RefdefUsable(*refdef))
@@ -174,16 +175,34 @@ namespace
 			}
 			view.fovX  = refdef->fov_x;
 			view.valid = true;
+			usedRefdef = true;
 			return;
 		}
 
 		// ---- view angles: newest usercmd + delta_angles, i.e. PM_UpdateViewAngles() -------------
-		// PM_UpdateViewAngles() does viewangles[i] = SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]),
-		// so rebuilding it here reproduces the direction the client actually rendered this frame.
+		// This mirrors SDK/code/game/bg_pmove.c PM_UpdateViewAngles(), all of it, not just the
+		// steady-state formula - the branches matter as much as the maths:
+		//
+		//   - during either intermission, or while dead (health <= 0) and playing (anything but
+		//     PM_SPECTATOR), the engine returns without touching the viewangles: the view is frozen
+		//     where death left it while the mouse keeps moving. The snapshot already carries that
+		//     frozen value, so it is used as-is instead of rebuilding from the usercmd - rebuilding
+		//     would follow the mouse and swing every tag across the screen while dead;
+		//   - otherwise viewangles[i] = SHORT2ANGLE((short)(cmd->angles[i] + ps->delta_angles[i])),
+		//     with pitch (index 0) clamped to +/-16000 shorts (+/-87.9 degrees). The (short)
+		//     truncation only ever changes the sum by multiples of 65536 - whole turns - so it keeps
+		//     a spawn-sized delta_angles honest rather than introducing error. The engine also writes
+		//     the clamped pitch back into ps->delta_angles; there is nothing to write back to here,
+		//     the value is recomputed every frame.
+		//
+		// Rebuilding it this way reproduces the direction the client actually rendered this frame.
 		// Falls back to the snapshot's own angles when no usercmd is available.
 		float angles[3];
 		bool  haveAngles = false;
-		if (syscall)
+		const bool frozen = (ps.pm_type == q3::kPmIntermission ||
+		                     ps.pm_type == q3::kPmSpIntermission ||
+		                     (ps.pm_type != q3::kPmSpectator && ps.stats[q3::kStatHealth] <= 0));
+		if (syscall && !frozen)
 		{
 			const int cmdNumber = (int)syscall(q3::CG_GETCURRENTCMDNUMBER);
 			q3::usercmd_t cmd;
@@ -191,7 +210,14 @@ namespace
 			if (syscall(q3::CG_GETUSERCMD, (intptr_t)cmdNumber, (intptr_t)&cmd, (intptr_t)sizeof(cmd)))
 			{
 				for (int i = 0; i < 3; ++i)
-					angles[i] = q3::ShortToAngle(cmd.angles[i] + ps.delta_angles[i]);
+				{
+					short temp = (short)(cmd.angles[i] + ps.delta_angles[i]);
+					if (i == 0 && temp > q3::kMaxViewPitchShort)         // PITCH
+						temp = (short)q3::kMaxViewPitchShort;
+					else if (i == 0 && temp < -q3::kMaxViewPitchShort)
+						temp = (short)-q3::kMaxViewPitchShort;
+					angles[i] = q3::ShortToAngle(temp);
+				}
 				haveAngles = true;
 			}
 		}
@@ -257,6 +283,22 @@ namespace
 		for (int i = 0; i < 3; ++i)
 			out[i] = raw[i] + ClampStep(velocity[i] * age);
 	}
+
+	// Depth of a world point along the view direction - the same near-plane test
+	// ProjectWorldToScreen() rejects points with. Gather() uses it to notice when the smoothing
+	// carried a tag to behind the viewer (a fast player running at the camera on an old snapshot)
+	// while the raw snapshot position is still in front, and keeps the raw one then instead of
+	// hiding a visible player.
+	bool IsBehindView(const NameEsp::View& view, const float world[3])
+	{
+		if (!view.valid || !world)
+			return true;
+		const float dx = world[0] - view.origin[0];
+		const float dy = world[1] - view.origin[1];
+		const float dz = world[2] - view.origin[2];
+		const float z = dx * view.axis[0][0] + dy * view.axis[0][1] + dz * view.axis[0][2];
+		return z <= 4.0f;
+	}
 }
 
 // =============================================================================================== //
@@ -294,6 +336,17 @@ bool NameEsp::ParseClientInfo(const char* infoString, int clientNum, PlayerTag& 
 	if (out.name[0] == 0)
 		return false;
 
+	// The GL::Font display lists only hold glyphs 32..127, and glCallLists() with an out-of-range
+	// byte is undefined behaviour - while player names do carry high bytes (umlauts and the like).
+	// '?' keeps the tag, and with it the player's position, where stripping could empty the name
+	// and hide them.
+	for (char* p = out.name; *p; ++p)
+	{
+		const unsigned char c = (unsigned char)*p;
+		if (c < 32 || c > 126)
+			*p = '?';
+	}
+
 	// "\t\" is the team. In 1.32 it is NUMERIC (cg_players.c CG_NewClientInfo does
 	// newInfo.team = atoi(Info_ValueForKey(configstring, "t"))): 0 free, 1 red, 2 blue,
 	// 3 spectator - the same numbering as team_t and as the Team enum below, so a numeric
@@ -322,6 +375,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 	s_frame.valid       = false;
 	s_frame.playerCount = 0;
 	s_frame.view.valid  = false;
+	s_frame.usedRefdef  = false;
 
 	if (!syscall)
 		return false;
@@ -338,12 +392,17 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 	             (intptr_t)&s_snapshot, (intptr_t)sizeof(s_snapshot)))
 		return false;                                   // not connected / snapshot not valid yet
 
+	// Zeroed first: the bridge leaves the destination untouched when the gameState is not live
+	// (mid-load), and without this the tags would be named from the previous level's clientinfo.
+	// A zeroed gameState reads as empty configstrings, which ParseClientInfo rejects - so a failed
+	// read yields no tags instead of wrong ones.
+	memset(&s_gameState, 0, sizeof(s_gameState));
 	syscall(q3::CG_GETGAMESTATE, (intptr_t)&s_gameState);
 
 	s_frame.serverTime   = serverTime;
 	s_frame.snapshotTime = s_snapshot.serverTime;
 
-	BuildView(serverTime, s_snapshot, syscall, refdef, s_frame.view);
+	BuildView(serverTime, s_snapshot, syscall, refdef, s_frame.view, s_frame.usedRefdef);
 
 	// ---- one tag per live player entity ---------------------------------------------------------
 	const int self = s_snapshot.ps.clientNum;
@@ -380,6 +439,25 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 		tag.origin[0] = smoothed[0];
 		tag.origin[1] = smoothed[1];
 		tag.origin[2] = smoothed[2] + q3::kPlayerTagHeight;   // just above the 32 unit player bbox
+
+		// The extrapolation above can overshoot to behind the viewer - a fast player running at
+		// the camera on an old snapshot - while the snapshot position itself is still in front.
+		// Draw() would skip that tag as behind-the-viewer and a visible player would lose their
+		// name, so fall back to the raw snapshot position (at most a snapshot behind, instead of
+		// nothing at all).
+		if (IsBehindView(s_frame.view, tag.origin))
+		{
+			float rawAnchor[3];
+			rawAnchor[0] = e.pos.trBase[0];
+			rawAnchor[1] = e.pos.trBase[1];
+			rawAnchor[2] = e.pos.trBase[2] + q3::kPlayerTagHeight;
+			if (!IsBehindView(s_frame.view, rawAnchor))
+			{
+				tag.origin[0] = rawAnchor[0];
+				tag.origin[1] = rawAnchor[1];
+				tag.origin[2] = rawAnchor[2];
+			}
+		}
 
 		++s_frame.playerCount;
 	}

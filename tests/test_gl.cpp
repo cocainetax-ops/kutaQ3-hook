@@ -8,8 +8,8 @@
 //
 // The screen positions themselves are taken from NameEsp::ProjectWorldToScreen, which
 // tests/test_nameesp.cpp checks independently against the engine's own matrices; this file is about
-// the drawing around them (font build, ortho setup, centring, drop shadow, team colour, and doing
-// nothing at all when there is nothing to draw).
+// the drawing around them (font build, ortho setup, centring, chest re-anchoring, drop shadow,
+// team colour, draw stats, and doing nothing at all when there is nothing to draw).
 //
 //     make -C tests check
 // =============================================================================================== //
@@ -70,15 +70,11 @@ namespace
 		return NULL;
 	}
 
-	// where the overlay should have put a centred tag for this player - the same centring plus
-	// the same on-screen clamp Draw() applies so glRasterPos stays valid (see nameEsp.cpp)
-	bool ExpectedCentre(const NameEsp::PlayerTag& tag, float& x, float& y)
+	// where the overlay should have put a tag centred on this screen point - the same centring
+	// plus the same on-screen clamp Draw() applies so glRasterPos stays valid (see nameEsp.cpp)
+	void ExpectedCentreAt(const NameEsp::ScreenPoint& p, const char* name, float& x, float& y)
 	{
-		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
-		NameEsp::ScreenPoint p;
-		if (!NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag.origin, p))
-			return false;
-		const float textWidth = kCharWidth * (float)strlen(tag.name);
+		const float textWidth = kCharWidth * (float)strlen(name);
 		x = p.x - textWidth * 0.5f;
 		y = p.y;
 		if (x < 0.0f)
@@ -93,6 +89,16 @@ namespace
 			y = (float)kVpH - 14.0f - 1.0f;
 		if (y < 0.0f)
 			y = 0.0f;
+	}
+
+	// ... for this player's head anchor (the chest test projects its own anchor instead)
+	bool ExpectedCentre(const NameEsp::PlayerTag& tag, float& x, float& y)
+	{
+		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+		NameEsp::ScreenPoint p;
+		if (!NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag.origin, p))
+			return false;
+		ExpectedCentreAt(p, tag.name, x, y);
 		return true;
 	}
 
@@ -259,6 +265,158 @@ static void TestTagsDrawn()
 	}
 }
 
+static void TestChestAnchoredUpClose()
+{
+	Section("the tag re-anchors to the chest when the head anchor leaves the screen");
+
+	// A bot 30 units ahead with the viewer pitched down 20 degrees: the anchor above the head
+	// projects off the top of the screen while the body is dead centre (see the comment in
+	// Draw()). The tag must sit on the body at full brightness, not dimmed at the top edge.
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 20.0f, 0.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Close\\t\\0", (const float[]){ 30.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+	const NameEsp::PlayerTag* tag = FindTag(1);
+	CHECK_TRUE(tag != NULL, "player 1 is in the frame");
+	if (!tag)
+		return;
+
+	// The head anchor must genuinely be off screen, or the test proves nothing...
+	const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+	NameEsp::ScreenPoint head = { 0.0f, 0.0f, false };
+	const bool headOk = NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag->origin, head);
+	CHECK_TRUE(headOk, "the head anchor projects");
+	if (headOk)
+		CHECK_TRUE(!head.inView, "the head anchor is off the top of the screen");
+
+	// ... and the chest anchor on screen.
+	float chest[3] = { tag->origin[0], tag->origin[1],
+	                   tag->origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
+	NameEsp::ScreenPoint pc = { 0.0f, 0.0f, false };
+	const bool chestOk = NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, chest, pc);
+	CHECK_TRUE(chestOk, "the chest anchor projects");
+	if (chestOk)
+		CHECK_TRUE(pc.inView, "the chest anchor is on screen");
+	if (!chestOk)
+		return;
+
+	Rec::CurrentDC() = NULL;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp = true;
+	NameEsp::Draw();
+
+	CHECK_INT(CountTextCalls("Close"), 2, "\"Close\" drawn twice (drop shadow + text)");
+
+	float wantX = 0.0f, wantY = 0.0f;
+	ExpectedCentreAt(pc, "Close", wantX, wantY);
+
+	unsigned char palette[3];
+	NameEsp::TeamColor(0, palette);
+	const unsigned int wantRgb = PackRgb(palette);
+
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		const Rec::Call* text = texts[i];
+		const Rec::Call* pos  = Rec::Prev(text, "glRasterPos2f");
+		const bool isShadow = (text->rgb == 0x000000u);
+
+		char what[128];
+		snprintf(what, sizeof(what), "\"Close\"%s has a raster position", isShadow ? " shadow" : "");
+		CHECK_TRUE(pos != NULL, what);
+		if (!pos)
+			continue;
+		snprintf(what, sizeof(what), "\"Close\"%s raster x", isShadow ? " shadow" : "");
+		CHECK_NEAR(pos->a[0], wantX + (isShadow ? 1.0f : 0.0f), 0.02, what);
+		snprintf(what, sizeof(what), "\"Close\"%s raster y", isShadow ? " shadow" : "");
+		CHECK_NEAR(pos->a[1], wantY + (isShadow ? 1.0f : 0.0f), 0.02, what);
+
+		// full team colour: the chest point is in view, so the tag is NOT dimmed
+		snprintf(what, sizeof(what), "\"Close\"%s colour", isShadow ? " shadow" : "");
+		CHECK_UINT(text->rgb, isShadow ? 0x000000u : wantRgb, what);
+	}
+
+	const NameEsp::DrawStats& st = NameEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 1, "one tag drawn");
+	CHECK_INT(st.inView, 1, "drawn ahead, full brightness");
+	CHECK_INT(st.edge, 0, "none at the edge");
+	CHECK_INT(st.behind, 0, "none behind");
+}
+
+static void TestDrawStats()
+{
+	Section("Draw() reports what it did with each tag");
+
+	// One bot dead ahead, one off the side of the screen (its chest is off screen too, so the
+	// chest fallback correctly declines and the tag stays a dimmed edge marker), one behind.
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Ahead\\t\\0", (const float[]){ 128.0f, 0.0f, 0.0f });
+	FakeEngine::SetPlayer(2, "\\n\\Edge\\t\\0",  (const float[]){ 128.0f, 400.0f, 0.0f });
+	FakeEngine::SetPlayer(3, "\\n\\Back\\t\\0",  (const float[]){ -128.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+
+	Rec::CurrentDC() = NULL;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp = true;
+	NameEsp::Draw();
+
+	CHECK_INT(Rec::Count("glCallLists"), 4, "two tags, each drawn twice (drop shadow + text)");
+	CHECK_INT(CountTextCalls("Ahead"), 2, "\"Ahead\" drawn twice");
+	CHECK_INT(CountTextCalls("Edge"), 2, "\"Edge\" drawn twice");
+	CHECK_INT(CountTextCalls("Back"), 0, "the player behind the viewer is not drawn");
+
+	// "Ahead" keeps the full team colour; "Edge" is dimmed 55% like Draw()'s Dim() does.
+	unsigned char palette[3];
+	NameEsp::TeamColor(0, palette);
+	const unsigned int fullRgb = PackRgb(palette);
+	const unsigned int dimRgb = ((unsigned int)(palette[0] * 55 / 100) << 16) |
+	                            ((unsigned int)(palette[1] * 55 / 100) << 8) |
+	                            (unsigned int)(palette[2] * 55 / 100);
+	bool aheadFull = false, edgeDim = false;
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		if (texts[i]->rgb == 0x000000u)
+			continue;                              // drop shadow
+		if (texts[i]->text == "Ahead" && texts[i]->rgb == fullRgb)
+			aheadFull = true;
+		if (texts[i]->text == "Edge" && texts[i]->rgb == dimRgb)
+			edgeDim = true;
+	}
+	CHECK_TRUE(aheadFull, "\"Ahead\" is drawn in the full team colour");
+	CHECK_TRUE(edgeDim, "\"Edge\" is drawn dimmed");
+
+	const NameEsp::DrawStats& st = NameEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 2, "two tags drawn");
+	CHECK_INT(st.inView, 1, "one drawn ahead");
+	CHECK_INT(st.edge, 1, "one clamped to the edge");
+	CHECK_INT(st.behind, 1, "one skipped behind the viewer");
+
+	// A frame that draws nothing reports zeros.
+	Config::g_Settings.nameEsp = false;
+	NameEsp::Draw();
+	const NameEsp::DrawStats& z = NameEsp::LastDrawStats();
+	CHECK_INT(z.drawn, 0, "feature off -> zero drawn");
+	CHECK_INT(z.inView, 0, "feature off -> zero ahead");
+	CHECK_INT(z.edge, 0, "feature off -> zero at the edge");
+	CHECK_INT(z.behind, 0, "feature off -> zero behind");
+}
+
 static void TestDrawsNothingWhenItShouldNot()
 {
 	Section("no drawing when there is nothing to draw");
@@ -335,6 +493,8 @@ int main(void)
 	TestFontIsBuiltOnce();
 	TestOverlayState();
 	TestTagsDrawn();
+	TestChestAnchoredUpClose();
+	TestDrawStats();
 	TestDrawsNothingWhenItShouldNot();
 	TestFormatSpecifierName();
 

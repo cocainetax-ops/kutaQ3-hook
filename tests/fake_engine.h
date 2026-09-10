@@ -32,6 +32,8 @@ namespace FakeEngine
 	void SetCmdServerTime(int serverTime);
 	void SetNoUserCmd();                                 // CG_GETUSERCMD starts failing
 	void SetFovString(const char* value);                // what "cg_fov" reads as
+	void SetPmType(int pmType);                          // playerState_t::pm_type (default PM_NORMAL)
+	void SetHealth(int health);                          // stats[STAT_HEALTH] (default 100, alive)
 
 	// ---- other clients --------------------------------------------------------------------------
 	// infoString is the raw CS_PLAYERS configstring, e.g. "\\n\\Bitterman\\t\\1\\model\\sarge"

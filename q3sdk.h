@@ -72,9 +72,27 @@ namespace q3
 
 	const int kDefaultViewHeight       = 26;      // bg_public.h:50 (standing eye height)
 
+	// pmtype_t + STAT_HEALTH - bg_public.h. The fallback view (nameEspCore.cpp BuildView) needs
+	// these to match PM_UpdateViewAngles() (bg_pmove.c) exactly: while dead (health <= 0) and
+	// playing (anything but PM_SPECTATOR), or during either intermission, the engine leaves the
+	// viewangles frozen instead of rebuilding them from the usercmd.
+	const int kPmSpectator             = 2;       // pmtype_t: PM_SPECTATOR
+	const int kPmIntermission          = 5;       // pmtype_t: PM_INTERMISSION
+	const int kPmSpIntermission        = 6;       // pmtype_t: PM_SPINTERMISSION
+	const int kStatHealth              = 0;       // statIndex_t: STAT_HEALTH
+
+	// PM_UpdateViewAngles() clamps pitch to +/-16000 shorts (+/-87.9 degrees) so the player can
+	// never look straight up or down past 90 degrees. The fallback view applies the same clamp.
+	const int kMaxViewPitchShort       = 16000;
+
 	// The player bbox is MINS_Z..+32 while standing (bg_pmove.c:1293 / 1307), so a name tag a few
 	// units above that clears the head.
 	const float kPlayerTagHeight          = 36.0f;
+
+	// Mid-torso of the same standing bbox. When the head anchor (+36) leaves the screen up close
+	// - aiming up/down at a nearby player - Draw() re-anchors the tag here rather than clamping
+	// a visible player's name to the edge; see the chest-anchor test in tests/test_gl.cpp.
+	const float kChestHeight              = 16.0f;
 
 	// ------------------------------------------------------------------------------------------
 	// angle packing - q_shared.h:1082

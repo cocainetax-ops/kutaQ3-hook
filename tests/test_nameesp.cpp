@@ -96,6 +96,16 @@ static void TestInfoStringParsing()
 	// a name full of format specifiers must survive verbatim - it is printed through "%s"
 	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\%s%s%n%x", 8, tag), "format specifier name accepted");
 	CHECK_STR(tag.name, "%s%s%n%x", "format specifiers kept literally");
+
+	// the display-list font only holds glyphs 32..127, so anything else becomes '?': the tag -
+	// and with it the player's position - stays where stripping could empty the name and hide them
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\B\xF6" "se\\t\\1", 17, tag), "high-byte name accepted");
+	CHECK_STR(tag.name, "B?se", "high byte becomes '?'");
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\A\x01" "B\\t\\0", 18, tag), "control-char name accepted");
+	CHECK_STR(tag.name, "A?B", "control char becomes '?'");
+	// the boundaries: 32 (space) and 126 ('~') survive, 31 and 127 do not
+	CHECK_TRUE(NameEsp::ParseClientInfo("\\n\\A\x1F ~\x7F" "B\\t\\2", 19, tag), "boundary bytes accepted");
+	CHECK_STR(tag.name, "A? ~?B", "only 32..126 survive");
 }
 
 static void TestModuleNameMatching()
@@ -282,6 +292,110 @@ static void TestView()
 	CHECK_NEAR(NameEsp::Current().view.fovX, 179.0f, 0.001, "fov above 179 clamped to 179");
 }
 
+static void TestFrozenView()
+{
+	Section("NameEsp::Gather - PM_UpdateViewAngles parity (frozen view, pitch clamp)");
+
+	const float origin[3]   = { 0.0f, 0.0f, 0.0f };
+	const float velocity[3] = { 0.0f, 0.0f, 0.0f };
+
+	// Dead and playing: the engine freezes the viewangles where death left them, so the mouse
+	// (the usercmd) must NOT move the ESP view. Point the usercmd elsewhere and check the
+	// snapshot's own angles win.
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 10.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetHealth(0);                                                        // dead
+	FakeEngine::SetCmdAngles(q3::AngleToShort(-30.0f), q3::AngleToShort(270.0f), 0);  // looking away
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered while dead");
+	{
+		float want[3] = { 10.0f, 90.0f, 0.0f };   // snapshot angles, unquantised floats
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][0], f[0], 1e-5, "dead view keeps the snapshot forward x");
+		CHECK_NEAR(NameEsp::Current().view.axis[0][1], f[1], 1e-5, "dead view keeps the snapshot forward y");
+		CHECK_NEAR(NameEsp::Current().view.axis[0][2], f[2], 1e-5, "dead view keeps the snapshot forward z");
+	}
+
+	// ... but a spectator with no health still follows the mouse: the engine exempts
+	// PM_SPECTATOR from the freeze.
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 10.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetPmType(q3::kPmSpectator);
+	FakeEngine::SetHealth(0);
+	FakeEngine::SetCmdAngles(q3::AngleToShort(-30.0f), q3::AngleToShort(270.0f), 0);
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered as a dead spectator");
+	{
+		float want[3] = { -30.0f, 270.0f, 0.0f };
+		for (int i = 0; i < 3; ++i)   // the usercmd path quantises through ANGLE2SHORT
+			want[i] = q3::ShortToAngle(q3::AngleToShort(want[i]));
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][0], f[0], 1e-5, "spectator view follows the usercmd");
+		CHECK_NEAR(NameEsp::Current().view.axis[0][1], f[1], 1e-5, "spectator view follows the usercmd (y)");
+	}
+
+	// Intermission: frozen too, whatever the health and whatever the usercmd says.
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 10.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetPmType(q3::kPmIntermission);
+	FakeEngine::SetCmdAngles(q3::AngleToShort(-30.0f), q3::AngleToShort(270.0f), 0);
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered in intermission");
+	{
+		float want[3] = { 10.0f, 90.0f, 0.0f };
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][0], f[0], 1e-5, "intermission view frozen");
+		CHECK_NEAR(NameEsp::Current().view.axis[0][1], f[1], 1e-5, "intermission view frozen (y)");
+	}
+
+	// Pitch clamp: +/-16000 shorts (+/-87.9 degrees), like the engine.
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 0.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetCmdAngles(30000, q3::AngleToShort(90.0f), 0);   // pitch way past straight up
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered with extreme pitch");
+	{
+		float want[3] = { q3::ShortToAngle(q3::kMaxViewPitchShort), 90.0f, 0.0f };
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][2], f[2], 1e-5, "pitch clamped to +87.9 degrees");
+	}
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 0.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetCmdAngles(-30000, q3::AngleToShort(90.0f), 0);
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered with extreme negative pitch");
+	{
+		float want[3] = { q3::ShortToAngle(-q3::kMaxViewPitchShort), 90.0f, 0.0f };
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][2], f[2], 1e-5, "pitch clamped to -87.9 degrees");
+	}
+
+	// The (short) truncation happens BEFORE the clamp, like the engine: 40000 wraps to -25536 and
+	// clamps to -16000 (down), it must not clamp to +16000 (up).
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, (const float[]){ 0.0f, 90.0f, 0.0f }, 26);
+	FakeEngine::SetCmdAngles(40000, q3::AngleToShort(90.0f), 0);
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "frame gathered with a wrapped pitch");
+	{
+		float want[3] = { q3::ShortToAngle(-q3::kMaxViewPitchShort), 90.0f, 0.0f };
+		float f[3], r[3], u[3];
+		AngleVectors(want, f, r, u);
+		CHECK_NEAR(NameEsp::Current().view.axis[0][2], f[2], 1e-5, "wrapped pitch truncates before clamping");
+	}
+}
+
 // =============================================================================================== //
 // The captured refdef_t path (vmHook.cpp hands Gather() the view the cgame rendered). Built with
 // the engine's own AnglesToAxis() so the axes are id's, not another copy of the formula.
@@ -335,6 +449,7 @@ static void TestRefdefView()
 	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &rd), "frame gathered with a refdef");
 	const NameEsp::View& view = NameEsp::Current().view;
 	CHECK_TRUE(view.valid, "view valid");
+	CHECK_TRUE(NameEsp::Current().usedRefdef, "captured refdef reported as the view source");
 	CHECK_NEAR(view.origin[0], 111.0f, 1e-5, "refdef vieworg x, not the snapshot origin");
 	CHECK_NEAR(view.origin[1], -222.0f, 1e-5, "refdef vieworg y");
 	CHECK_NEAR(view.origin[2], 333.0f, 1e-5, "refdef vieworg z - no viewheight added");
@@ -390,6 +505,7 @@ static void TestRefdefView()
 	NameEsp::Reset();
 	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), NULL), "gathered without a refdef");
 	CHECK_TRUE(NameEsp::Current().view.valid, "fallback view still valid");
+	CHECK_TRUE(!NameEsp::Current().usedRefdef, "rebuilt view reported as the view source");
 }
 
 static void TestSmoothing()
@@ -427,6 +543,25 @@ static void TestSmoothing()
 	CHECK_TRUE(NameEsp::Gather(1150, FakeEngine::Syscall()), "after a teleport");
 	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 9000.0f, 0.001,
 	           "teleport-sized jump is used as-is");
+
+	// smoothing overshoot: a fast player running at the camera on an old snapshot extrapolates
+	// to BEHIND the viewer while the snapshot position is still in front. The tag must fall back
+	// to the raw snapshot position instead of vanishing with the "behind the viewer" reject.
+	NameEsp::Reset();
+	FakeEngine::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);   // eye at z=26, looking along +X
+	FakeEngine::SetPlayer(1, "\\n\\Charger", (const float[]){ 70.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "overshoot: first sample");
+	FakeEngine::Reset();
+	FakeEngine::SetSnapshotTime(1050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Charger", (const float[]){ 30.0f, 0.0f, 0.0f });
+	// velocity is now -800 u/s along X; at +250 ms the smoothing lands at 30-200 = -170, i.e.
+	// behind the viewer (near plane 4), while the raw 30 is still in front of it
+	CHECK_TRUE(NameEsp::Gather(1300, FakeEngine::Syscall()), "overshoot: second sample");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 30.0f, 0.001,
+	           "overshoot falls back to the raw snapshot position");
 }
 
 static void TestReset()
@@ -675,6 +810,7 @@ int main(void)
 	TestGatherGuards();
 	TestGatherPlayers();
 	TestView();
+	TestFrozenView();
 	TestRefdefView();
 	TestSmoothing();
 	TestReset();
