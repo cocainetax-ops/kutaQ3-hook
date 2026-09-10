@@ -51,9 +51,15 @@ namespace
 
 	// -------------------------------------------------------------------------------------------
 	// A gameState_t is 1024 string offsets, a 16000 byte packed string pool and a used byte count.
-	// CL_ParseGamestate() fills it by appending each configstring, so dataCount starts at 1 (the
-	// leading zero byte), the offsets are strictly increasing and all of them index the pool.
-	// That is enough to recognise a copy of it in a megabyte of VM data.
+	// CL_ParseGamestate() appends each configstring the server enumerates (in ascending index
+	// order, SV_SendClientGameState loops i = 0..MAX_CONFIGSTRINGS), and CL_SetConfigstring()
+	// rebuilds the pool the same way when one changes at runtime; the offsets of the indices that
+	// were actually set are therefore strictly increasing and all index the pool. Indices the
+	// server never sends (unused model/sound slots, empty player slots, ...) stay zero, and the
+	// majority of the 1024 are zero on a live level. Skipping those zero gaps is what recognises
+	// a real gameState in a megabyte of VM data - an earlier check required every one of the
+	// 1024 offsets to be nonzero and increasing, which no shipped server ever produces, so the
+	// scan failed until the first runtime "cs" command happened to re-fire CG_GETGAMESTATE.
 	// -------------------------------------------------------------------------------------------
 	bool LooksLikeGameState(const q3::gameState_t* gs)
 	{
@@ -63,14 +69,23 @@ namespace
 			return false;
 
 		const int count = gs->dataCount;
-		int prev = gs->stringOffsets[0];
-		for (int i = 1; i < q3::kMaxConfigStrings; ++i)
+
+		// Walk the set slots (nonzero offsets) in ascending index order: their offsets were
+		// appended in that order, so they must be strictly increasing and inside the pool.
+		int prev = 0;
+		int setCount = 0;
+		for (int i = 0; i < q3::kMaxConfigStrings; ++i)
 		{
 			const int offset = gs->stringOffsets[i];
+			if (offset == 0)
+				continue;                               // index never set: a gap, not corruption
 			if (offset <= prev || offset >= count)
 				return false;
 			prev = offset;
+			++setCount;
 		}
+		if (setCount < 2)
+			return false;                              // serverinfo plus at least one more string
 
 		// the pool starts with the serverinfo, and the clientinfo block has to hold at least one
 		// player: an empty gameState (loading screen, wrong structure) is not what we want

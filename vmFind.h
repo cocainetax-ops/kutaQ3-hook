@@ -43,10 +43,12 @@
 //
 // The same trick locates the configstrings: the cgame keeps its own copy of the engine's
 // gameState_t in its data segment (cgs.gameState, filled by trap_GetGameState() in CG_Init), and a
-// gameState_t is recognisable by shape - 1024 monotonic string offsets, all inside the 16000 byte
-// string pool, with the CS_PLAYERS entries pointing at "\n\...\t\..." infostrings. That is what
-// makes injecting into a map that is already running work: the CG_GETGAMESTATE trap that hands the
-// address over only fires at level load, so on a late inject the copy is found by scanning instead.
+// gameState_t is recognisable by shape - the nonzero string offsets (strictly increasing and all
+// inside the 16000 byte string pool, with zero gaps for indices the server never set), a
+// serverinfo carrying the mapname, and CS_PLAYERS entries pointing at "\n\...\t\..." infostrings.
+// That is what makes injecting into a map that is already running work: the CG_GETGAMESTATE trap
+// that hands the address over only fires at level load, so on a late inject the copy is found by
+// scanning instead.
 //
 // Nothing in this file needs Windows, so tests/test_vmfind.cpp builds a real vm_t / gameState_t
 // from the SDK headers and checks the scanners against it.

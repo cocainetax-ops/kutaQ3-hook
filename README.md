@@ -197,10 +197,20 @@ shaped for `1`, `2` and `0` are each accepted, `compiled` and `currentlyInterpre
 without changing the outcome, and the shared invariants still reject a bad record in either mode.
 The status line in the menu reports which one it found.
 
-Injecting into a map that is already running works too: `CG_GETGAMESTATE` only fires in `CG_Init`,
-so on a late inject the cgame's `gameState_t` copy is found by scanning its data segment for one -
-1024 strictly increasing string offsets inside the pool, a serverinfo with a `mapname`, at least one
-`CS_PLAYERS` infostring.
+The pointer is captured from the `CG_GETGAMESTATE` trap, which fires in `CG_Init` and again whenever
+a `"cs"` server command changes a configstring (`CG_ConfigStringModified`). `CG_Init` runs between
+network processing and the next present, so a hook that attaches from the `SwapBuffers` poll always
+misses that first trap (both on first connect and on every map change); the cgame's `gameState_t`
+copy is then found by scanning its data segment for the right *shape* - the set (nonzero) string
+offsets strictly increasing and inside the 16000-byte pool, with zero gaps for the majority of the
+1024 indices a real server never sets, a serverinfo with a `mapname`, and at least one `CS_PLAYERS`
+infostring. The scan runs on the first poll after the VM record exists, which is while the loading
+screen renders, so names are present the moment control returns. (An earlier shape check demanded
+that *all 1024* offsets be nonzero and increasing, which no shipped server ever produces: the scan
+then failed until the first runtime `"cs"` command happened to re-fire the trap - a dropped weapon
+or a player joining, typically a minute or more into the map - and names appeared "by themselves".)
+This is also what made spectator mode look fine immediately: joining the spectator team rewrites
+your own `CS_PLAYERS` configstring and re-fires the trap at once.
 
 ### The view
 
