@@ -310,12 +310,15 @@ namespace
 
 		case q3::CG_R_RENDERSCENE:
 		{
-			// once per rendered frame, with the view the cgame just built
+			// Active-play HUD models render after the world with their own camera.
+			// Never let those RDF_NOWORLDMODEL scenes replace the world view.
 			const uintptr_t src = Resolve(args[1]);
 			if (src)
 			{
-				memcpy(&s_refdef, (const void*)src, sizeof(s_refdef));
-				s_haveRefdef = true;
+				q3::refdef_t candidate;
+				memcpy(&candidate, (const void*)src, sizeof(candidate));
+				if (NameEsp::CaptureWorldRefdef(candidate, s_refdef))
+					s_haveRefdef = true;
 			}
 			break;
 		}
