@@ -22,6 +22,10 @@ namespace
 	// no longer the current one.
 	GL::Font s_font;
 
+	// What the last Draw() did with its frame (see DrawStats in nameEsp.h). Reset at the top of
+	// every Draw() so a frame that draws nothing reports zeros.
+	NameEsp::DrawStats s_stats;
+
 	// Off-screen tags are clamped to the viewport edge; dimming them says "this one is not where
 	// the tag is" without needing an arrow.
 	void Dim(unsigned char rgb[3])
@@ -32,8 +36,14 @@ namespace
 	}
 }
 
+const NameEsp::DrawStats& NameEsp::LastDrawStats()
+{
+	return s_stats;
+}
+
 void NameEsp::Draw()
 {
+	s_stats.drawn = s_stats.inView = s_stats.edge = s_stats.behind = 0;
 	if (!Config::g_Settings.nameEsp)
 		return;
 
@@ -70,8 +80,26 @@ void NameEsp::Draw()
 			const PlayerTag& tag = frame.players[i];
 
 			ScreenPoint p;
-			if (!ProjectWorldToScreen(frame.view, vp, tag.origin, p))
-				continue;                              // behind the viewer
+			const bool headOk = ProjectWorldToScreen(frame.view, vp, tag.origin, p);
+			if (!headOk || !p.inView)
+			{
+				// The anchor sits 36 units above the player's feet, and up close plus aiming
+				// up/down that point leaves the screen while the player is still plainly
+				// visible. Rather than clamping a visible player's name to the edge (dimmed,
+				// easily missed), re-anchor to the chest when the chest is on screen.
+				float chest[3] = { tag.origin[0], tag.origin[1],
+				                   tag.origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
+				ScreenPoint pc;
+				if (ProjectWorldToScreen(frame.view, vp, chest, pc) && pc.inView)
+					p = pc;                            // on the visible body, full brightness
+				else if (!headOk)
+				{
+					++s_stats.behind;
+					continue;                          // behind the viewer
+				}
+				// else: ahead of the viewer but off screen; keep the edge-clamped point
+				// (dimmed below).
+			}
 
 			unsigned char rgb[3];
 			TeamColor(tag.team, rgb);
@@ -112,6 +140,11 @@ void NameEsp::Draw()
 			static const unsigned char black[3] = { 0, 0, 0 };
 			s_font.Print(x + 1.0f, y + 1.0f, black, "%s", tag.name);
 			s_font.Print(x, y, rgb, "%s", tag.name);
+			++s_stats.drawn;
+			if (p.inView)
+				++s_stats.inView;
+			else
+				++s_stats.edge;
 		}
 
 		GL::RestoreGL();

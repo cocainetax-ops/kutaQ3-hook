@@ -1194,10 +1194,11 @@ void RenderKutaQ3Menu()
 				                  "vm_cgame setting and no cgame DLL needed.");
 			if (cfg.nameEsp)
 			{
-				// Always show both lines: the frame state tells a no-tags report apart at a glance.
-				// "N names" with nothing visible -> they project off screen; "snapshot ok, 0 other
-				// players" -> the snapshot carries only the viewer when joined (PVS); "no frame" ->
-				// the VM hook is not seeing the cgame's snapshots at all.
+				// Always show the status lines: the frame state tells a no-tags report apart at a
+				// glance. "N names" with nothing visible -> the draw line says whether they went
+				// to the edge or behind the viewer; "snapshot ok, 0 other players in it" -> the
+				// snapshot carries only the viewer when joined (PVS); "no frame" -> the VM hook
+				// is not seeing the cgame's snapshots at all.
 				const NameEsp::Frame& esp = NameEsp::Current();
 				if (esp.valid && esp.playerCount > 0)
 					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d name%s on screen",
@@ -1207,6 +1208,23 @@ void RenderKutaQ3Menu()
 				else
 					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
 				ImGui::TextDisabled("cgame: %s", Vm::Status());
+				// The view line separates a wrong-camera report from a no-data one at a glance:
+				// "captured refdef" is the exact view the cgame rendered this frame; "rebuilt"
+				// means no refdef was captured and the view was reconstructed from the usercmd.
+				if (esp.valid)
+					ImGui::TextDisabled("view: %s, snapshot %d ms old",
+					                    esp.usedRefdef ? "captured refdef" : "rebuilt (no refdef)",
+					                    esp.serverTime - esp.snapshotTime);
+				// What this frame's Draw() did with those tags: drawn ahead (full brightness),
+				// clamped to the edge (dimmed), or skipped behind the viewer. "N names" with
+				// "0 drawn, N behind" is a wrong-camera report; "N at edge" is the off-screen
+				// case - not a gathering failure either way.
+				if (esp.valid && esp.playerCount > 0)
+				{
+					const NameEsp::DrawStats& st = NameEsp::LastDrawStats();
+					ImGui::TextDisabled("%d drawn (%d ahead, %d at edge, %d behind)",
+					                    st.drawn, st.inView, st.edge, st.behind);
+				}
 			}
 
 			ImGui::EndTabItem();

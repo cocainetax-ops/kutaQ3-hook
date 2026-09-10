@@ -6,6 +6,8 @@
 // Draws every other player's name on the screen, above their head, through walls - using the
 // GL::Font display-list text renderer in glText.h / glText.cpp, from inside the hooked
 // SwapBuffers in main.cpp (the only place the GL context is current and the frame is complete).
+// Up close, where aiming up/down pushes the above-the-head anchor off the screen while the
+// player is still visible, the tag re-anchors to the chest instead of sliding to the edge.
 //
 // Where the data comes from
 // -------------------------
@@ -32,8 +34,9 @@
 // what the traps expose:
 //
 //   - angles: the newest usercmd (CG_GETUSERCMD) plus playerState_t::delta_angles - the same
-//     SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]) the engine's PM_UpdateViewAngles() does -
-//     falling back to the snapshot's own viewangles;
+//     SHORT2ANGLE(cmd->angles[i] + ps->delta_angles[i]) the engine's PM_UpdateViewAngles() does,
+//     including its frozen view while dead-and-playing or in intermission and its +/-87.9 degree
+//     pitch clamp - falling back to the snapshot's own viewangles;
 //   - origin: playerState_t::origin of the newest snapshot, pushed forward by velocity for the age
 //     of that snapshot (clamped to 250 ms). Client side prediction is not re-implemented, so this
 //     is accurate to a few units rather than exact;
@@ -66,7 +69,8 @@ namespace NameEsp
 	};
 
 	// One name tag, in world space. origin is the anchor the text is centred on: the player's
-	// smoothed position plus q3::kPlayerTagHeight, i.e. just above the head.
+	// smoothed position plus q3::kPlayerTagHeight, i.e. just above the head - or the raw snapshot
+	// position when the smoothing overshot to behind the viewer (see Gather).
 	struct PlayerTag
 	{
 		char  name[64];       // Q3 "^1" colour codes already stripped
@@ -103,6 +107,7 @@ namespace NameEsp
 		int       serverTime;    // cl.serverTime passed to CG_DRAW_ACTIVE_FRAME
 		int       snapshotTime;  // the snapshot the tags were built from
 		View      view;
+		bool      usedRefdef;    // the view above is the cgame's captured refdef (else rebuilt)
 		int       playerCount;
 		PlayerTag players[q3::kMaxClients];
 	};
@@ -129,9 +134,26 @@ namespace NameEsp
 	void TeamColor(int team, unsigned char rgb[3]);
 
 	// Parses the clientinfo configstring ("\n\Player\t\1\model\sarge\...") into a tag.
-	// Returns false when the configstring carries no usable name. Exposed for the tests; Gather()
-	// uses it internally.
+	// Returns false when the configstring carries no usable name. The name comes out stripped of
+	// Q3 "^1" colour codes and sanitised to printable ASCII (32..126, anything else becomes '?'),
+	// because the GL::Font display lists only hold glyphs 32..127 and glCallLists() with an
+	// out-of-range byte is undefined behaviour. Exposed for the tests; Gather() uses it internally.
 	bool ParseClientInfo(const char* infoString, int clientNum, PlayerTag& out);
+
+	// What Draw() did with the frame it was given: how many tags were drawn at their unclamped
+	// position, how many were clamped to the edge, and how many were skipped as behind the
+	// viewer. Read by the menu; it separates "tags gather but project off screen" from "tags are
+	// behind the viewer" without guessing.
+	struct DrawStats
+	{
+		int drawn;    // tags issued to GL::Font (shadow + text each)
+		int inView;   // ... drawn unclamped, full brightness
+		int edge;     // ... clamped to the viewport edge, dimmed
+		int behind;   // skipped as behind the viewer
+	};
+
+	// The stats for the last Draw() call - zeros when that call drew nothing.
+	const DrawStats& LastDrawStats();
 
 	// Draw() - the GL half, in nameEsp.cpp. Called from the hooked SwapBuffers every frame.
 	void Draw();

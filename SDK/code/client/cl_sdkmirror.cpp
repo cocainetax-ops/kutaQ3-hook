@@ -183,6 +183,10 @@ CHECK_CONST(kCsPlayers, CS_PLAYERS);
 CHECK_CONST(kEtPlayer, ET_PLAYER);
 CHECK_CONST(kEfDead, EF_DEAD);
 CHECK_CONST(kDefaultViewHeight, DEFAULT_VIEWHEIGHT);
+CHECK_CONST(kPmSpectator, PM_SPECTATOR);
+CHECK_CONST(kPmIntermission, PM_INTERMISSION);
+CHECK_CONST(kPmSpIntermission, PM_SPINTERMISSION);
+CHECK_CONST(kStatHealth, STAT_HEALTH);
 
 /* the syscall numbers the VM hook watches, and the ones the ESP's bridge still answers */
 CHECK_CONST(CG_MILLISECONDS, CG_MILLISECONDS);
@@ -279,6 +283,10 @@ int main(void)
 	PCONST(kEtPlayer, ET_PLAYER);
 	PCONST(kEfDead, EF_DEAD);
 	PCONST(kDefaultViewHeight, DEFAULT_VIEWHEIGHT);
+	PCONST(kPmSpectator, PM_SPECTATOR);
+	PCONST(kPmIntermission, PM_INTERMISSION);
+	PCONST(kPmSpIntermission, PM_SPINTERMISSION);
+	PCONST(kStatHealth, STAT_HEALTH);
 
 	printf("\ncgame syscalls the VM hook watches / the ESP bridge answers\n");
 	PCONST(CG_MILLISECONDS, CG_MILLISECONDS);

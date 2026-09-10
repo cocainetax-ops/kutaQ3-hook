@@ -168,6 +168,9 @@ namespace FakeEngine
 		s_entityCount       = 0;
 
 		s_snapshot.ps.viewheight = q3::kDefaultViewHeight;
+		s_snapshot.ps.pm_type = 0;                            // PM_NORMAL
+		s_snapshot.ps.stats[q3::kStatHealth] = 100;           // alive: PM_UpdateViewAngles() leaves
+		                                                      // the viewangles frozen while dead
 	}
 
 	void SetConnected(bool connected)   { s_connected = connected; }
@@ -210,6 +213,8 @@ namespace FakeEngine
 	void SetCmdServerTime(int serverTime) { s_cmd.serverTime = serverTime; }
 	void SetNoUserCmd()                   { s_haveUserCmd = false; }
 	void SetFovString(const char* value)  { strncpy(s_fov, value, sizeof(s_fov) - 1); }
+	void SetPmType(int pmType)            { s_snapshot.ps.pm_type = pmType; }
+	void SetHealth(int health)            { s_snapshot.ps.stats[q3::kStatHealth] = health; }
 
 	void SetPlayer(int clientNum, const char* infoString, const float origin[3])
 	{
