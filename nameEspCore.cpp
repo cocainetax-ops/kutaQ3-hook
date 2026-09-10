@@ -374,6 +374,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 {
 	s_frame.valid       = false;
 	s_frame.playerCount = 0;
+	s_frame.numEntities = 0;
 	s_frame.view.valid  = false;
 	s_frame.usedRefdef  = false;
 
@@ -411,6 +412,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 		numEntities = 0;
 	if (numEntities > q3::kMaxEntitiesInSnapshot)
 		numEntities = q3::kMaxEntitiesInSnapshot;
+	s_frame.numEntities = numEntities;
 
 	for (int i = 0; i < numEntities && s_frame.playerCount < q3::kMaxClients; ++i)
 	{

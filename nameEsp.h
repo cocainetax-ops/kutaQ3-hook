@@ -106,6 +106,11 @@ namespace NameEsp
 		bool      valid;
 		int       serverTime;    // cl.serverTime passed to CG_DRAW_ACTIVE_FRAME
 		int       snapshotTime;  // the snapshot the tags were built from
+		int       numEntities;   // entities in that snapshot before any filtering (self, the dead
+		                         // and non-players all still counted). The menu shows it when zero
+		                         // tags were built, which separates "the snapshot carries only the
+		                         // viewer" (solo map, no bots, PVS) from "entities are there but
+		                         // every name was rejected" (configstrings).
 		View      view;
 		bool      usedRefdef;    // the view above is the cgame's captured refdef (else rebuilt)
 		int       playerCount;
