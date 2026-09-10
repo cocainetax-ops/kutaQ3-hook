@@ -11,12 +11,15 @@
 namespace
 {
 	q3::snapshot_t   s_snapshot;
+	q3::snapshot_t   s_prevSnapshot;
 	q3::gameState_t  s_gameState;
 	q3::usercmd_t    s_cmd;
 
 	bool s_connected   = true;
 	bool s_haveUserCmd = true;
+	bool s_havePrev    = false;
 	int  s_cmdNumber   = 7;
+	int  s_snapshotNum = 1;       // cl.snap.messageNum, starts at the first live frame
 	char s_fov[32]     = "90";
 
 	int s_snapshotRequests  = 0;
@@ -107,16 +110,27 @@ namespace
 			return 0;
 
 		case q3::CG_GETCURRENTSNAPSHOTNUMBER:
-			*(int*)args[1] = 0;                            // CL_GetCurrentSnapshotNumber
-			*(int*)args[2] = s_snapshot.serverTime;
+			*(int*)args[1] = s_snapshotNum;                // cl.snap.messageNum
+			*(int*)args[2] = s_snapshot.serverTime;        // cl.snap.serverTime
 			return 0;
 
 		case q3::CG_GETSNAPSHOT:
 			++s_snapshotRequests;
 			if (!s_connected)
 				return 0;                                  // CL_GetSnapshot says "not valid"
-			*(q3::snapshot_t*)args[2] = s_snapshot;
-			return 1;
+			// Like CL_GetSnapshot: only the newest number and the one before it (the pair the
+			// cgame interpolates) are still in the circular buffer.
+			if ((int)args[1] == s_snapshotNum)
+			{
+				*(q3::snapshot_t*)args[2] = s_snapshot;
+				return 1;
+			}
+			if (s_havePrev && (int)args[1] == s_snapshotNum - 1)
+			{
+				*(q3::snapshot_t*)args[2] = s_prevSnapshot;
+				return 1;
+			}
+			return 0;                                      // aged out of the buffer, like the engine
 
 		case q3::CG_GETCURRENTCMDNUMBER:
 			return s_cmdNumber;
@@ -155,11 +169,14 @@ namespace FakeEngine
 	void Reset()
 	{
 		memset(&s_snapshot, 0, sizeof(s_snapshot));
+		memset(&s_prevSnapshot, 0, sizeof(s_prevSnapshot));
 		memset(&s_gameState, 0, sizeof(s_gameState));
 		memset(&s_cmd, 0, sizeof(s_cmd));
 
 		s_connected         = true;
 		s_haveUserCmd       = true;
+		s_havePrev          = false;
+		s_snapshotNum       = 1;
 		s_cmdNumber         = 7;
 		strcpy(s_fov, "90");
 		s_snapshotRequests  = 0;
@@ -171,6 +188,18 @@ namespace FakeEngine
 		s_snapshot.ps.pm_type = 0;                            // PM_NORMAL
 		s_snapshot.ps.stats[q3::kStatHealth] = 100;           // alive: PM_UpdateViewAngles() leaves
 		                                                      // the viewangles frozen while dead
+	}
+
+	void NewServerFrame(int newServerTime)
+	{
+		// The cgame just advanced: the current snapshot becomes the previous one and a fresh
+		// (empty) frame starts. Configstrings persist; the test repopulates ps/entities.
+		s_prevSnapshot  = s_snapshot;
+		s_havePrev      = true;
+		s_snapshotNum++;
+		s_snapshot.numEntities = 0;
+		s_entityCount = 0;
+		s_snapshot.serverTime = newServerTime;
 	}
 
 	void SetConnected(bool connected)   { s_connected = connected; }
@@ -220,6 +249,12 @@ namespace FakeEngine
 	{
 		SetConfigString(q3::kCsPlayers + clientNum, infoString);
 		AddEntity(q3::kEtPlayer, clientNum, origin, 0);
+	}
+
+	void SetPlayerEx(int clientNum, const char* infoString, const float origin[3], int eFlags)
+	{
+		SetConfigString(q3::kCsPlayers + clientNum, infoString);
+		AddEntity(q3::kEtPlayer, clientNum, origin, eFlags);
 	}
 
 	void SetDeadPlayer(int clientNum, const char* infoString, const float origin[3])

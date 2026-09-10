@@ -39,7 +39,14 @@ namespace FakeEngine
 	// infoString is the raw CS_PLAYERS configstring, e.g. "\\n\\Bitterman\\t\\1\\model\\sarge"
 	// (the team is numeric in 1.32: 0 free, 1 red, 2 blue, 3 spectator)
 	void SetPlayer(int clientNum, const char* infoString, const float origin[3]);
+	// like SetPlayer, but with explicit entityState eFlags (e.g. EF_TELEPORT_BIT)
+	void SetPlayerEx(int clientNum, const char* infoString, const float origin[3], int eFlags);
 	void SetDeadPlayer(int clientNum, const char* infoString, const float origin[3]);
+
+	// Roll a new server frame: the current snapshot becomes the previous one (the pair the
+	// cgame interpolates between), the message number advances and the entity list is cleared
+	// for repopulation; configstrings and the playerState persist.
+	void NewServerFrame(int newServerTime);
 	void SetNonPlayerEntity(int number, const float origin[3]);   // ET_ITEM etc. - must be ignored
 
 	// ---- the trampoline -------------------------------------------------------------------------

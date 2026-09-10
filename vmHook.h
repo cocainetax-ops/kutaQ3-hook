@@ -44,8 +44,10 @@
 // The detour watches the traps flow past and keeps what the ESP needs. Nothing here calls the
 // engine, so none of it depends on being inside a VM call:
 //
-//   CG_GETSNAPSHOT  -> the snapshot the engine just copied into the cgame's own buffer, copied
-//                      again into ours: player entity positions + the local playerState_t
+//   CG_GETSNAPSHOT  -> every snapshot the engine copies into a cgame buffer is kept in a small
+//                      ring keyed by message number (player entity positions + local
+//                      playerState_t), so Gather() can read both the newest snapshot and the one
+//                      before it and lerp players the way the cgame renders them
 //   CG_GETGAMESTATE -> the address of the cgame's cgs.gameState, read live for the CS_PLAYERS
 //                      configstrings (found by scanning instead when the hook was installed after
 //                      the level loaded, see vmFind.h). Fires in CG_Init and again on every "cs"

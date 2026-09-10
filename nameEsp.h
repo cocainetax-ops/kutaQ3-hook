@@ -44,9 +44,14 @@
 //   - fov_x: the cg_fov cvar, clamped the way CG_DrawActiveFrame() clamps it;
 //   - fov_y and the screen rect: derived from the GL viewport at draw time.
 //
-// Other players' positions are smoothed the same way the engine interpolates entities: the
-// previous snapshot's sample is kept per client and the resulting velocity carries the tag forward
-// to the current frame, so tags do not sit a snapshot behind a moving player.
+// Other players are positioned exactly where the renderer puts their models: the VM hook keeps
+// the previous server snapshot as well as the newest one, and Gather() lerps each player's
+// position between the two at the refdef's cg.time - the same interpolation
+// CG_InterpolateEntityPosition() in cg_ents.c does (frameInterpolation clamped to 0..1). The
+// engine never velocity-extrapolates players, and neither does this: while waiting for the next
+// snapshot the tag holds on the newest server position, exactly like the model. A player missing
+// from the previous snapshot (just entered the PVS / respawned) or carrying a toggled
+// EF_TELEPORT_BIT is placed at the newest sample without lerping, matching CG_ResetEntity().
 //
 // Split into two halves on purpose: everything above (Gather and the maths) lives in
 // nameEspCore.cpp, which needs no <windows.h> and no GL, so tests/ can compile and run that exact
@@ -122,6 +127,21 @@ namespace NameEsp
 		                         // tags were built, which separates "the snapshot carries only the
 		                         // viewer" (solo map, no bots, PVS) from "entities are there but
 		                         // every name was rejected" (configstrings).
+		// diagnostic counters for the menu's "why no names?" report. playerEntities counts
+		// every ET_PLAYER entity in the newest snapshot before any filter (the server never
+		// sends the local viewer's own entity, so on a healthy connection it is the count of
+		// alive players currently in this client's potentially-visible set). The skip counters
+		// explain what happened to each one. All are zeroed by Gather() every frame.
+		int       selfClientNum;       // snapshot ps.clientNum
+		int       selfPmType;          // snapshot ps.pm_type (0 normal, 2 spectator, ...)
+		int       selfHealth;          // snapshot ps.stats[STAT_HEALTH]
+		int       playerEntities;      // ET_PLAYER entities in the newest snapshot
+		int       skippedSelf;         // ET_PLAYER entities whose clientNum is the viewer
+		int       skippedDead;         // corpses: eFlags & EF_DEAD
+		int       skippedBadSlot;      // clientNum outside [0, kMaxClients)
+		int       skippedNoInfo;       // CS_PLAYERS configstring empty / no usable name
+		int       interpolatedPlayers; // tags placed by lerping the previous and newest snapshot
+
 		View      view;
 		bool      usedRefdef;    // the view above is the cgame's captured refdef (else rebuilt)
 		int       playerCount;

@@ -16,25 +16,15 @@ namespace
 {
 	// The engine fills these in; they are big (snapshot_t alone is ~52 KB, gameState_t ~20 KB), so
 	// they are static and never put on the stack.
-	q3::snapshot_t   s_snapshot;
+	q3::snapshot_t   s_snapshot;     // newest server snapshot the cgame requested
+	q3::snapshot_t   s_prevSnapshot; // the one before it, when the hook still had it
 	q3::gameState_t  s_gameState;
 
 	NameEsp::Frame   s_frame;
 
-	// Previous snapshot sample per client, used to carry a moving player's tag forward to the
-	// current frame (see SmoothOrigin). Invalidated by NameEsp::Reset().
-	struct Track
-	{
-		bool  valid;
-		int   time;
-		float origin[3];
-	};
-	Track s_track[q3::kMaxClients];
-
 	// ---- limits that keep a stale or bogus sample from throwing a tag across the map -------------
 	const int   kMaxSnapshotAgeMs = 250;    // beyond this a snapshot is treated as "where it says"
 	const float kMaxExtrapolatedStep = 200.0f;  // units; ~2x what a player covers in 250 ms
-	const float kMaxTrackedSpeed = 2000.0f;     // units/s; anything faster is a teleport, not motion
 
 	int ClampAge(int serverTime, int snapshotTime)
 	{
@@ -259,63 +249,70 @@ namespace
 	}
 
 	// --------------------------------------------------------------------------------------------
-	// A snapshot says where a player WAS at snapshot.serverTime. The engine interpolates remote
-	// players between two snapshots for the same reason; with only the newest one in hand the next
-	// best thing is the velocity implied by the previous sample, carried forward to this frame.
+	// Find an entity by its snapshot number in another snapshot, the way the cgame matches
+	// centity records up when it transitions snapshots (cg.snap->entities[i].number). For players
+	// the entity number is the client number (BG_PlayerStateToEntityState: s->number = clientNum).
 	// --------------------------------------------------------------------------------------------
-	void SmoothOrigin(int clientNum, const float* raw, int snapshotTime, int serverTime, float* out)
+	const q3::entityState_t* FindEntityNumber(const q3::snapshot_t& snap, int number)
 	{
-		const Track& prev = s_track[clientNum];
-		float velocity[3] = { 0.0f, 0.0f, 0.0f };
-		bool  haveVelocity = false;
-
-		const int dtMs = snapshotTime - prev.time;
-		if (prev.valid && dtMs > 0 && dtMs <= kMaxSnapshotAgeMs)
+		int n = snap.numEntities;
+		if (n < 0)
+			n = 0;
+		if (n > q3::kMaxEntitiesInSnapshot)
+			n = q3::kMaxEntitiesInSnapshot;
+		for (int i = 0; i < n; ++i)
 		{
-			const float dt = (float)dtMs * 0.001f;
-			float speedSq = 0.0f;
-			for (int i = 0; i < 3; ++i)
-			{
-				velocity[i] = (raw[i] - prev.origin[i]) / dt;
-				speedSq += velocity[i] * velocity[i];
-			}
-			// a jump this big is a teleport or a re-entry into the PVS, not motion
-			haveVelocity = (speedSq <= kMaxTrackedSpeed * kMaxTrackedSpeed);
+			if (snap.entities[i].number == number)
+				return &snap.entities[i];
 		}
-
-		s_track[clientNum].valid = true;
-		s_track[clientNum].time  = snapshotTime;
-		s_track[clientNum].origin[0] = raw[0];
-		s_track[clientNum].origin[1] = raw[1];
-		s_track[clientNum].origin[2] = raw[2];
-
-		if (!haveVelocity)
-		{
-			out[0] = raw[0];
-			out[1] = raw[1];
-			out[2] = raw[2];
-			return;
-		}
-
-		const float age = (float)ClampAge(serverTime, snapshotTime) * 0.001f;
-		for (int i = 0; i < 3; ++i)
-			out[i] = raw[i] + ClampStep(velocity[i] * age);
+		return NULL;
 	}
 
-	// Depth of a world point along the view direction - the same near-plane test
-	// ProjectWorldToScreen() rejects points with. Gather() uses it to notice when the smoothing
-	// carried a tag to behind the viewer (a fast player running at the camera on an old snapshot)
-	// while the raw snapshot position is still in front, and keeps the raw one then instead of
-	// hiding a visible player.
-	bool IsBehindView(const NameEsp::View& view, const float world[3])
+	// --------------------------------------------------------------------------------------------
+	// Remote player positions, exactly the way the renderer places the models. CG_InterpolateEntity
+	// Position() (cg_ents.c) evaluates the player's position at the previous snapshot's time and at
+	// the newest one and lerps by cg.frameInterpolation = (cg.time - old.serverTime) /
+	// (new.serverTime - old.serverTime), clamped to 0..1 - and it does this for player entities
+	// unconditionally, even when the snapshot carried a LINEAR_STOP trajectory: players are never
+	// velocity-extrapolated ("it is important to not extrapolate player positions if more recent
+	// data is available"). Doing the same lerp here glues the tag to the model on every frame and
+	// removes the stepping a one-snapshot-ahead position caused on moving players.
+	//
+	// When the previous sample is missing (the player just entered this client's PVS, the hook was
+	// freshly installed, or EF_TELEPORT_BIT toggled - CG_SetNextSnap sets interpolate = qfalse in
+	// exactly those cases), the newest snapshot position is used unlerped, matching CG_ResetEntity()
+	// which snaps the model straight onto the new position.
+	// renderTime is cg.time: the refdef time captured from R_RenderScene (Vm::ServerTime()). When
+	// there is no refdef the caller passes the newest snapshot time, so f clamps to 1 and the tag
+	// sits on the newest position (the model holds there too, while waiting for the next snap).
+	// --------------------------------------------------------------------------------------------
+	void InterpolatedOrigin(const q3::entityState_t* prev, int prevTime,
+	                        const q3::entityState_t& cur, int curTime,
+	                        int renderTime, float* out)
 	{
-		if (!view.valid || !world)
-			return true;
-		const float dx = world[0] - view.origin[0];
-		const float dy = world[1] - view.origin[1];
-		const float dz = world[2] - view.origin[2];
-		const float z = dx * view.axis[0][0] + dy * view.axis[0][1] + dz * view.axis[0][2];
-		return z <= 4.0f;
+		out[0] = cur.pos.trBase[0];
+		out[1] = cur.pos.trBase[1];
+		out[2] = cur.pos.trBase[2];
+
+		if (!prev)
+			return;
+		// a teleport toggles EF_TELEPORT_BIT on the entity (BG_PlayerStateToEntityState copies the
+		// ps flags); the cgame refuses to interpolate across it.
+		if (((prev->eFlags ^ cur.eFlags) & q3::kEfTeleport) != 0)
+			return;
+
+		const int dt = curTime - prevTime;
+		if (dt <= 0)
+			return;
+
+		float f = (float)(renderTime - prevTime) / (float)dt;
+		if (f < 0.0f)
+			f = 0.0f;
+		else if (f > 1.0f)
+			f = 1.0f;
+
+		for (int i = 0; i < 3; ++i)
+			out[i] = prev->pos.trBase[i] + f * (cur.pos.trBase[i] - prev->pos.trBase[i]);
 	}
 }
 
@@ -337,7 +334,8 @@ const NameEsp::Frame& NameEsp::Current()
 void NameEsp::Reset()
 {
 	memset(&s_frame, 0, sizeof(s_frame));
-	memset(&s_track, 0, sizeof(s_track));
+	memset(&s_snapshot, 0, sizeof(s_snapshot));
+	memset(&s_prevSnapshot, 0, sizeof(s_prevSnapshot));
 }
 
 bool NameEsp::ParseClientInfo(const char* infoString, int clientNum, PlayerTag& out)
@@ -403,6 +401,15 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 	s_frame.numEntities = 0;
 	s_frame.view.valid  = false;
 	s_frame.usedRefdef  = false;
+	s_frame.selfClientNum       = -1;
+	s_frame.selfPmType          = 0;
+	s_frame.selfHealth          = 0;
+	s_frame.playerEntities      = 0;
+	s_frame.skippedSelf         = 0;
+	s_frame.skippedDead         = 0;
+	s_frame.skippedBadSlot      = 0;
+	s_frame.skippedNoInfo       = 0;
+	s_frame.interpolatedPlayers = 0;
 
 	if (!syscall)
 		return false;
@@ -419,6 +426,23 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 	             (intptr_t)&s_snapshot, (intptr_t)sizeof(s_snapshot)))
 		return false;                                   // not connected / snapshot not valid yet
 
+	// The cgame renders remote players by interpolating between the previous and the newest
+	// server snapshots (CG_ProcessSnapshots / CG_InterpolateEntityPosition), and the VM hook keeps
+	// a ring of the snapshots it saw the cgame request, so ask for the previous one as well. When
+	// the bridge does not have it (fresh install / first frame after a level load) it serves the
+	// newest one, which we detect from the serverTime and then treat as "no previous sample".
+	bool havePrev = false;
+	if (snapNumber > 0 &&
+	    syscall(q3::CG_GETSNAPSHOT, (intptr_t)(snapNumber - 1),
+	            (intptr_t)&s_prevSnapshot, (intptr_t)sizeof(s_prevSnapshot)))
+	{
+		if (s_prevSnapshot.serverTime > 0 &&
+		    s_prevSnapshot.serverTime < s_snapshot.serverTime)
+		{
+			havePrev = true;
+		}
+	}
+
 	// Zeroed first: the bridge leaves the destination untouched when the gameState is not live
 	// (mid-load), and without this the tags would be named from the previous level's clientinfo.
 	// A zeroed gameState reads as empty configstrings, which ParseClientInfo rejects - so a failed
@@ -428,6 +452,9 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 
 	s_frame.serverTime   = serverTime;
 	s_frame.snapshotTime = s_snapshot.serverTime;
+	s_frame.selfClientNum = s_snapshot.ps.clientNum;
+	s_frame.selfPmType    = s_snapshot.ps.pm_type;
+	s_frame.selfHealth    = s_snapshot.ps.stats[q3::kStatHealth];
 
 	BuildView(serverTime, s_snapshot, syscall, refdef, s_frame.view, s_frame.usedRefdef);
 
@@ -446,46 +473,48 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 
 		if (e.eType != q3::kEtPlayer)
 			continue;
+		++s_frame.playerEntities;
+
 		if (e.eFlags & q3::kEfDead)
-			continue;                                   // corpse on the floor
+		{
+			++s_frame.skippedDead;                   // corpse on the floor
+			continue;
+		}
 
 		const int clientNum = e.clientNum;
 		if (clientNum < 0 || clientNum >= q3::kMaxClients)
+		{
+			++s_frame.skippedBadSlot;
 			continue;
+		}
 		if (clientNum == self)
-			continue;                                   // your own name, in your own face
+		{
+			++s_frame.skippedSelf;                   // your own name, in your own face
+			continue;
+		}
 
 		const char* info = q3::ConfigString(&s_gameState, q3::kCsPlayers + clientNum);
 
 		PlayerTag& tag = s_frame.players[s_frame.playerCount];
 		if (!ParseClientInfo(info, clientNum, tag))
-			continue;                                   // slot is empty / no name yet
-
-		float smoothed[3];
-		SmoothOrigin(clientNum, e.pos.trBase, s_snapshot.serverTime, serverTime, smoothed);
-
-		tag.origin[0] = smoothed[0];
-		tag.origin[1] = smoothed[1];
-		tag.origin[2] = smoothed[2] + q3::kPlayerTagHeight;   // just above the 32 unit player bbox
-
-		// The extrapolation above can overshoot to behind the viewer - a fast player running at
-		// the camera on an old snapshot - while the snapshot position itself is still in front.
-		// Draw() would skip that tag as behind-the-viewer and a visible player would lose their
-		// name, so fall back to the raw snapshot position (at most a snapshot behind, instead of
-		// nothing at all).
-		if (IsBehindView(s_frame.view, tag.origin))
 		{
-			float rawAnchor[3];
-			rawAnchor[0] = e.pos.trBase[0];
-			rawAnchor[1] = e.pos.trBase[1];
-			rawAnchor[2] = e.pos.trBase[2] + q3::kPlayerTagHeight;
-			if (!IsBehindView(s_frame.view, rawAnchor))
-			{
-				tag.origin[0] = rawAnchor[0];
-				tag.origin[1] = rawAnchor[1];
-				tag.origin[2] = rawAnchor[2];
-			}
+			++s_frame.skippedNoInfo;                 // slot is empty / no name yet
+			continue;
 		}
+
+		// Same player in the previous snapshot, when present, gives the engine-faithful lerp
+		// endpoint. Player entity numbers are client numbers (BG_PlayerStateToEntityState).
+		const q3::entityState_t* prev =
+			havePrev ? FindEntityNumber(s_prevSnapshot, e.number) : NULL;
+		float anchor[3];
+		InterpolatedOrigin(prev, s_prevSnapshot.serverTime, e, s_snapshot.serverTime,
+		                   serverTime, anchor);
+		if (prev)
+			++s_frame.interpolatedPlayers;
+
+		tag.origin[0] = anchor[0];
+		tag.origin[1] = anchor[1];
+		tag.origin[2] = anchor[2] + q3::kPlayerTagHeight;   // just above the 32 unit player bbox
 
 		++s_frame.playerCount;
 	}

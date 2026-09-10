@@ -168,6 +168,13 @@ static void TestGatherPlayers()
 	CHECK_TRUE(frame.valid, "frame valid");
 	CHECK_INT(frame.playerCount, 3, "three live players tagged (self, dead and item excluded)");
 	CHECK_INT(frame.numEntities, 6, "entity count is pre-filtering (self + 3 live + dead + item)");
+	CHECK_INT(frame.playerEntities, 5, "five ET_PLAYER entities (self + three live + corpse)");
+	CHECK_INT(frame.skippedSelf, 1, "the local player entity is skipped as self");
+	CHECK_INT(frame.skippedDead, 1, "the corpse is counted as dead");
+	CHECK_INT(frame.skippedNoInfo, 0, "every live player has a configstring");
+	CHECK_INT(frame.selfClientNum, 0, "self client number comes from the snapshot ps");
+	CHECK_INT(frame.selfPmType, 0, "self pm_type is PM_NORMAL");
+	CHECK_INT(frame.selfHealth, 100, "self health is reported");
 	CHECK_INT(frame.serverTime, 1000, "server time recorded");
 	CHECK_INT(frame.snapshotTime, 1000, "snapshot time recorded");
 
@@ -205,7 +212,7 @@ static void TestGatherPlayers()
 		CHECK_INT(granger->team, NameEsp::TeamFree, "free for all colour");
 	}
 
-	CHECK_INT(FakeEngine::SnapshotRequests(), 1, "one snapshot read");
+	CHECK_INT(FakeEngine::SnapshotRequests(), 2, "newest snapshot read, plus a prev attempt");
 	CHECK_INT(FakeEngine::GameStateRequests(), 1, "one gamestate read");
 	CHECK_INT(FakeEngine::UserCmdRequests(), 1, "one usercmd read (for the view angles)");
 }
@@ -537,60 +544,92 @@ static void TestRefdefView()
 	CHECK_TRUE(!NameEsp::Current().usedRefdef, "rebuilt view reported as the view source");
 }
 
-static void TestSmoothing()
+static void TestInterpolation()
 {
-	Section("NameEsp::Gather - carrying moving players forward");
+	Section("NameEsp::Gather - engine-faithful player interpolation");
 
 	const float here[3] = { 0.0f, 0.0f, 0.0f };
 	const float none[3] = { 0.0f, 0.0f, 0.0f };
 	const float angles[3] = { 0.0f, 0.0f, 0.0f };
 
+	// ---- first frame: no previous snapshot yet --------------------------------------------------
 	FakeEngine::Reset();
 	NameEsp::Reset();
 	FakeEngine::SetSnapshotTime(1000);
 	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
 	FakeEngine::SetPlayer(1, "\\n\\Runner", (const float[]){ 0.0f, 0.0f, 0.0f });
-	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "first sample");
-	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 0.0f, 0.001, "first sample is not extrapolated");
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "first frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 0.0f, 0.001,
+	           "first frame is not extrapolated");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 0,
+	          "nothing is interpolated without a previous snapshot");
 
-	// 50 ms later the player is 5 units along +x: 100 u/s. The snapshot is then 100 ms old when we
-	// are asked, so the tag should sit 10 units past it. No NameEsp::Reset() here - the whole point
-	// is that the previous sample is still in the smoothing history.
-	FakeEngine::Reset();
-	FakeEngine::SetSnapshotTime(1050);
+	// ---- second server frame: runner covered 5 units in 50 ms (100 u/s) -------------------------
+	FakeEngine::NewServerFrame(1050);
 	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
 	FakeEngine::SetPlayer(1, "\\n\\Runner", (const float[]){ 5.0f, 0.0f, 0.0f });
-	CHECK_TRUE(NameEsp::Gather(1150, FakeEngine::Syscall()), "second sample");
-	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f + 100.0f * 0.1f, 0.01,
-	           "velocity from the previous snapshot, carried forward by the snapshot age");
 
-	// a teleport-sized jump must not be extrapolated
+	// CG_InterpolateEntityPosition(): cg.time at the midpoint -> the model, and the tag, are
+	// halfway between the two server samples.
+	CHECK_TRUE(NameEsp::Gather(1025, FakeEngine::Syscall()), "midpoint frame gathered");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 1, "the runner is interpolated");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 2.5f, 0.01f,
+	           "tag sits on the lerp midpoint, not one snapshot ahead");
+
+	// f is clamped to the two samples at both ends, never beyond
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "old-end frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 0.0f, 0.01f, "f = 0 -> previous position");
+	CHECK_TRUE(NameEsp::Gather(1050, FakeEngine::Syscall()), "new-end frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f, "f = 1 -> newest position");
+	// Waiting for the next server snapshot: the engine holds players on the newest sample rather
+	// than velocity-extrapolating them, so the tag must not run ahead of the model either.
+	CHECK_TRUE(NameEsp::Gather(1150, FakeEngine::Syscall()), "frame waiting for the next snap");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f,
+	           "no forward extrapolation while waiting for the next snapshot");
+
+	// ---- a stationary player is motionless at every interpolation fraction --------------------
 	FakeEngine::Reset();
-	FakeEngine::SetSnapshotTime(1100);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Runner", (const float[]){ 9000.0f, 0.0f, 0.0f });
-	CHECK_TRUE(NameEsp::Gather(1150, FakeEngine::Syscall()), "after a teleport");
-	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 9000.0f, 0.001,
-	           "teleport-sized jump is used as-is");
-
-	// smoothing overshoot: a fast player running at the camera on an old snapshot extrapolates
-	// to BEHIND the viewer while the snapshot position is still in front. The tag must fall back
-	// to the raw snapshot position instead of vanishing with the "behind the viewer" reject.
 	NameEsp::Reset();
-	FakeEngine::Reset();
-	FakeEngine::SetSnapshotTime(1000);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);   // eye at z=26, looking along +X
-	FakeEngine::SetPlayer(1, "\\n\\Charger", (const float[]){ 70.0f, 0.0f, 0.0f });
-	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "overshoot: first sample");
-	FakeEngine::Reset();
-	FakeEngine::SetSnapshotTime(1050);
+	FakeEngine::SetSnapshotTime(2000);
 	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Charger", (const float[]){ 30.0f, 0.0f, 0.0f });
-	// velocity is now -800 u/s along X; at +250 ms the smoothing lands at 30-200 = -170, i.e.
-	// behind the viewer (near plane 4), while the raw 30 is still in front of it
-	CHECK_TRUE(NameEsp::Gather(1300, FakeEngine::Syscall()), "overshoot: second sample");
-	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 30.0f, 0.001,
-	           "overshoot falls back to the raw snapshot position");
+	FakeEngine::SetPlayer(1, "\\n\\Sentry", (const float[]){ 20.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(2000, FakeEngine::Syscall()), "static: first frame gathered");
+	FakeEngine::NewServerFrame(2050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Sentry", (const float[]){ 20.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(2025, FakeEngine::Syscall()), "static: mid frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 20.0f, 0.01f,
+	           "identical endpoints never jitter");
+
+	// ---- a toggled teleport bit snaps to the new position instead of lerping across the map ----
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(3000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Blinker", (const float[]){ 5.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(3000, FakeEngine::Syscall()), "teleport: first frame gathered");
+	FakeEngine::NewServerFrame(3050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayerEx(1, "\\n\\Blinker", (const float[]){ 100.0f, 0.0f, 0.0f },
+	                        q3::kEfTeleport);
+	CHECK_TRUE(NameEsp::Gather(3025, FakeEngine::Syscall()), "teleport: mid frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 100.0f, 0.01f,
+	           "a teleport is used as-is instead of lerping across it");
+
+	// ---- a player just entering the PVS is missing from the previous snapshot ------------------
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(4000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	CHECK_TRUE(NameEsp::Gather(4000, FakeEngine::Syscall()), "PVS entry: first frame gathered");
+	FakeEngine::NewServerFrame(4050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Arrival", (const float[]){ 50.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(4025, FakeEngine::Syscall()), "PVS entry: second frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 50.0f, 0.01f,
+	           "newly visible player uses the newest position, matching CG_ResetEntity()");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 0,
+	          "a player with no previous sample is not interpolated");
 }
 
 static void TestReset()
@@ -885,7 +924,7 @@ int main(void)
 	TestView();
 	TestFrozenView();
 	TestRefdefView();
-	TestSmoothing();
+	TestInterpolation();
 	TestReset();
 	TestProjection();
 	TestTeamColors();

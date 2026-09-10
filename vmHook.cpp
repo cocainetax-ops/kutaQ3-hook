@@ -26,13 +26,63 @@ namespace
 	systemCall_t           s_origSystemCall = NULL;
 
 	// ---- what the traps handed over ------------------------------------------------------------
-	q3::snapshot_t         s_snapshot;
+	// The cgame renders remote players by interpolating between the previous and the newest
+	// server snapshots, so a single newest copy is not enough: a small ring of the snapshots the
+	// cgame recently requested lets Gather() read both endpoints (keyed by the engine's message
+	// number). 6 slots cover ~300 ms of server frames at the default sv_fps of 20.
+	const int kSnapRingSize = 6;
+	struct SnapSlot
+	{
+		bool           have;
+		int            number;       // cl.snap.messageNum this was requested as
+		q3::snapshot_t snap;
+	};
+	SnapSlot               s_snaps[kSnapRingSize];
 	q3::refdef_t           s_refdef;
 	const q3::gameState_t* s_gameState      = NULL;   // cgs.gameState, inside the cgame's memory
 	bool                   s_haveSnapshot   = false;
 	bool                   s_haveRefdef     = false;
 	int                    s_snapshotNumber = 0;
-	int                    s_snapshotTime   = 0;      // cl.snap.serverTime
+	int                    s_snapshotTime   = 0;      // newest snap: cl.snap.serverTime
+
+	// Exact-number lookup for the bridge (Gather() asks for the newest and the previous one), else
+	// NULL.
+	SnapSlot* FindSnapSlot(int number)
+	{
+		for (int i = 0; i < kSnapRingSize; ++i)
+			if (s_snaps[i].have && s_snaps[i].number == number)
+				return &s_snaps[i];
+		return NULL;
+	}
+
+	// Slot to store a freshly delivered snapshot in: the slot already holding that message number
+	// (a re-request overwrites in place), else an empty one, else the oldest slot (lowest number).
+	SnapSlot* StoreSnapSlot(int number)
+	{
+		SnapSlot* empty = NULL;
+		SnapSlot* oldest = NULL;
+		for (int i = 0; i < kSnapRingSize; ++i)
+		{
+			SnapSlot* slot = &s_snaps[i];
+			if (slot->have && slot->number == number)
+				return slot;
+			if (!slot->have && !empty)
+				empty = slot;
+			if (slot->have && (!oldest || slot->number < oldest->number))
+				oldest = slot;
+		}
+		return empty ? empty : oldest;
+	}
+
+	// The newest snapshot the ring currently holds, or NULL.
+	const SnapSlot* NewestSnapSlot()
+	{
+		const SnapSlot* best = NULL;
+		for (int i = 0; i < kSnapRingSize; ++i)
+			if (s_snaps[i].have && (!best || s_snaps[i].number > best->number))
+				best = &s_snaps[i];
+		return best;
+	}
 
 	// The fallback view (nameEsp.h) without a captured refdef: newest usercmd + cg_fov, the way
 	// PM_UpdateViewAngles() / CG_DrawActiveFrame() read them. Captured from the cgame's own
@@ -183,7 +233,7 @@ namespace
 
 	void DropCaptured()
 	{
-		memset(&s_snapshot, 0, sizeof(s_snapshot));
+		memset(s_snaps, 0, sizeof(s_snaps));
 		memset(&s_refdef, 0, sizeof(s_refdef));
 		memset(&s_userCmd, 0, sizeof(s_userCmd));
 		s_gameState      = NULL;
@@ -222,16 +272,29 @@ namespace
 		{
 		case q3::CG_GETSNAPSHOT:
 			// CL_GetSnapshot() only writes the destination when it returns true, so a failed read
-			// leaves the previous sample in place - which is what the ESP wants anyway.
+			// delivers nothing. Every successful request is kept, keyed by the message number:
+			// the cgame walks processedSnapshotNum up one server frame at a time, so the previous
+			// and newest snapshots both pass here and Gather() can interpolate between the two the
+			// same way CG_InterpolateEntityPosition() does.
 			if (result)
 			{
 				const uintptr_t dest = Resolve(args[2]);
 				if (dest)
 				{
-					memcpy(&s_snapshot, (const void*)dest, sizeof(s_snapshot));
-					s_snapshotNumber = args[1];
-					s_snapshotTime   = s_snapshot.serverTime;
-					s_haveSnapshot   = true;
+					SnapSlot* slot = StoreSnapSlot(args[1]);
+					if (slot)
+					{
+						memcpy(&slot->snap, (const void*)dest, sizeof(slot->snap));
+						slot->have   = true;
+						slot->number = args[1];
+						const SnapSlot* newest = NewestSnapSlot();
+						if (newest)
+						{
+							s_snapshotNumber = newest->number;
+							s_snapshotTime   = newest->snap.serverTime;
+							s_haveSnapshot   = true;
+						}
+					}
 				}
 			}
 			break;
@@ -376,12 +439,20 @@ namespace
 
 		case q3::CG_GETSNAPSHOT:
 		{
-			va_arg(ap, intptr_t);                       // snapshot number - the latest is served
-			const intptr_t dest = va_arg(ap, intptr_t);
+			const int      requested = (int)va_arg(ap, intptr_t);  // message number
+			const intptr_t dest      = va_arg(ap, intptr_t);
 			va_end(ap);
-			if (!s_haveSnapshot || !dest)
+			if (!dest)
+				return 0;
+			// Serve the exact snapshot Gather() asked for (the previous one is used to lerp
+			// players the way the cgame does); if it has aged out of the ring, fall back to the
+			// newest one. Gather() detects the fallback from matching/ascending serverTimes.
+			const SnapSlot* slot = FindSnapSlot(requested);
+			if (!slot)
+				slot = NewestSnapSlot();
+			if (!slot || !slot->have)
 				return 0;                               // not connected / nothing valid yet
-			memcpy((void*)dest, &s_snapshot, sizeof(s_snapshot));
+			memcpy((void*)dest, &slot->snap, sizeof(slot->snap));
 			return 1;
 		}
 
