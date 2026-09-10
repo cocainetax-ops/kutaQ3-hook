@@ -1196,15 +1196,18 @@ void RenderKutaQ3Menu()
 			{
 				// Always show the status lines: the frame state tells a no-tags report apart at a
 				// glance. "N names" with nothing visible -> the draw line says whether they went
-				// to the edge or behind the viewer; "snapshot ok, 0 other players in it" -> the
-				// snapshot carries only the viewer when joined (PVS); "no frame" -> the VM hook
-				// is not seeing the cgame's snapshots at all.
+				// to the edge or behind the viewer; "snapshot ok, 0 other players in it" carries
+				// the snapshot's entity count, which separates "only the viewer in it" (solo map
+				// with no bots, PVS) from "entities present but every name rejected"
+				// (configstrings); "no frame" -> the VM hook is not seeing the cgame's snapshots
+				// at all.
 				const NameEsp::Frame& esp = NameEsp::Current();
 				if (esp.valid && esp.playerCount > 0)
 					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d name%s on screen",
 					                   esp.playerCount, esp.playerCount == 1 ? "" : "s");
 				else if (esp.valid)
-					ImGui::TextDisabled("snapshot ok, 0 other players in it");
+					ImGui::TextDisabled("snapshot ok, 0 other players in it (%d %s in snapshot)",
+					                    esp.numEntities, esp.numEntities == 1 ? "entity" : "entities");
 				else
 					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
 				ImGui::TextDisabled("cgame: %s", Vm::Status());

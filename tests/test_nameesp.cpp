@@ -135,6 +135,7 @@ static void TestGatherGuards()
 	CHECK_TRUE(!NameEsp::Gather(1000, NULL), "no syscall trampoline -> no frame");
 	CHECK_TRUE(!NameEsp::Current().valid, "frame stays invalid");
 	CHECK_INT(NameEsp::Current().playerCount, 0, "no tags");
+	CHECK_INT(NameEsp::Current().numEntities, 0, "no entities reported");
 
 	FakeEngine::Reset();
 	NameEsp::Reset();
@@ -166,6 +167,7 @@ static void TestGatherPlayers()
 	const NameEsp::Frame& frame = NameEsp::Current();
 	CHECK_TRUE(frame.valid, "frame valid");
 	CHECK_INT(frame.playerCount, 3, "three live players tagged (self, dead and item excluded)");
+	CHECK_INT(frame.numEntities, 6, "entity count is pre-filtering (self + 3 live + dead + item)");
 	CHECK_INT(frame.serverTime, 1000, "server time recorded");
 	CHECK_INT(frame.snapshotTime, 1000, "snapshot time recorded");
 
@@ -583,6 +585,7 @@ static void TestReset()
 	NameEsp::Reset();
 	CHECK_TRUE(!NameEsp::Current().valid, "frame dropped");
 	CHECK_INT(NameEsp::Current().playerCount, 0, "tags dropped");
+	CHECK_INT(NameEsp::Current().numEntities, 0, "entity count dropped");
 	CHECK_TRUE(!NameEsp::Current().view.valid, "view dropped");
 
 	// the smoothing history is dropped too: the next sample must not extrapolate from the old one
