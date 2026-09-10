@@ -503,6 +503,33 @@ static void TestRefdefView()
 	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a NaN axis");
 	CHECK_NEAR(NameEsp::Current().view.fovX, 110.0f, 0.001, "NaN refdef rejected");
 
+	// ---- a refdef older than the snapshot is a frozen camera, not the rendered view --------
+	// (R_RenderScene stopped arriving while snapshots kept flowing). Projecting through it pins
+	// every tag to the edge, so it is rejected like a shape failure and the fallback view -
+	// usercmd angles plus cg_fov - takes over instead.
+	NameEsp::Reset();
+	bad = rd;
+	bad.time = 5000 - 1000;                        // a full second stale
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a stale refdef");
+	CHECK_TRUE(!NameEsp::Current().usedRefdef, "stale refdef rejected");
+	CHECK_NEAR(NameEsp::Current().view.fovX, 110.0f, 0.001, "stale refdef -> falls back to cg_fov");
+
+	// ...but small negatives are the cgame reading the NEXT snapshot ahead for interpolation,
+	// which is legitimate and must keep the refdef.
+	NameEsp::Reset();
+	bad = rd;
+	bad.time = 5000 - 50;
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a read-ahead refdef");
+	CHECK_TRUE(NameEsp::Current().usedRefdef, "50 ms of read-ahead keeps the refdef");
+	CHECK_NEAR(NameEsp::Current().view.fovX, 105.0f, 1e-5, "read-ahead refdef still provides the fov");
+
+	// the boundary itself still counts as fresh
+	NameEsp::Reset();
+	bad = rd;
+	bad.time = 5000 - NameEsp::kRefdefStaleMs;
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), &bad), "gathered with a threshold-old refdef");
+	CHECK_TRUE(NameEsp::Current().usedRefdef, "exactly kRefdefStaleMs keeps the refdef");
+
 	// no refdef at all still works - the fallback view above is what the tests before this use
 	NameEsp::Reset();
 	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall(), NULL), "gathered without a refdef");
