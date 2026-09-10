@@ -28,7 +28,8 @@
 // Preferred source is the refdef_t the cgame handed the renderer (CG_R_RENDERSCENE), captured by
 // vmHook.cpp: the exact vieworg, viewaxis and fov_x the frame was drawn with. It is only used once
 // it passes a shape check (see RefdefUsable below), because it is read out of the cgame's data
-// segment by address.
+// segment by address - and a freshness check (see kRefdefStaleMs), because a refdef older than
+// the snapshot is a frozen camera, and projecting through it pins every tag to the edge.
 //
 // Without a refdef - no VM hook, or a captured one that fails the check - the view is rebuilt from
 // what the traps expose:
@@ -56,6 +57,16 @@
 
 namespace NameEsp
 {
+	// A captured refdef older than the snapshot it would be projected against is not the view
+	// the frame was rendered with - R_RenderScene stopped arriving while snapshots kept
+	// flowing - and projecting through it pins every tag to the edge (a frozen camera). Past
+	// this many milliseconds of staleness BuildView rejects the refdef and the rebuilt view
+	// takes over, and Vm::ServerTime stops taking the frame time from it. Small negatives are
+	// legitimate and must NOT trip this: the cgame reads the NEXT snapshot ahead for
+	// interpolation, so the newest captured snapshot can be a server frame newer than the
+	// rendered one (tens of ms on a local game).
+	const int kRefdefStaleMs = 500;
+
 	// clientinfo's "\t\" value, mapped to the palette below. Stock 1.32 sends it numeric
 	// (CG_NewClientInfo: atoi), with the same numbering as team_t - 0 free, 1 red, 2 blue,
 	// 3 spectator - so the enum matches on purpose. Unknown / missing -> TeamFree.

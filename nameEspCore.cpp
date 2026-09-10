@@ -154,6 +154,22 @@ namespace
 	}
 
 	// --------------------------------------------------------------------------------------------
+	// Freshness, the partner of the shape check above: is a captured refdef the view THIS frame
+	// was rendered with? R_RenderScene fires once per rendered frame and the snapshot the tags
+	// come from is the newest captured one, so a refdef older than that snapshot means the
+	// captures stopped arriving while snapshots kept flowing - a frozen camera. Projecting
+	// through it pins every tag to the edge (the world moved on, the camera did not), so past
+	// NameEsp::kRefdefStaleMs the refdef is rejected exactly like a shape failure and the
+	// rebuilt view (fresh usercmd angles) takes over. Small negatives never reach the threshold:
+	// the cgame reads the NEXT snapshot ahead for interpolation, so the newest captured
+	// snapshot is routinely a server frame (tens of ms) newer than the rendered one.
+	// --------------------------------------------------------------------------------------------
+	bool RefdefStale(const q3::refdef_t& rd, int snapshotTime)
+	{
+		return (snapshotTime - rd.time) > NameEsp::kRefdefStaleMs;
+	}
+
+	// --------------------------------------------------------------------------------------------
 	// The view. See the "The view" block in nameEsp.h for why each piece comes from where.
 	// --------------------------------------------------------------------------------------------
 	void BuildView(int serverTime, const q3::snapshot_t& snap, q3::syscall_t syscall,
@@ -164,7 +180,7 @@ namespace
 		usedRefdef = false;
 
 		// ---- the view the cgame actually rendered, when the VM hook captured it ----------------
-		if (refdef && RefdefUsable(*refdef))
+		if (refdef && RefdefUsable(*refdef) && !RefdefStale(*refdef, snap.serverTime))
 		{
 			for (int i = 0; i < 3; ++i)
 			{

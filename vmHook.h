@@ -92,8 +92,10 @@ namespace Vm
 	// until the next level load.
 	const q3::refdef_t* Refdef();
 
-	// The serverTime the frame being drawn belongs to: refdef_t::time, falling back to the newest
-	// snapshot's serverTime. 0 when neither is known.
+	// The serverTime the frame being drawn belongs to: refdef_t::time, unless that refdef is
+	// stale (older than the newest snapshot by more than NameEsp::kRefdefStaleMs - a frozen
+	// camera the view already rejected), in which case the snapshot's own serverTime. 0 when
+	// neither is known.
 	int ServerTime();
 
 	// True once a snapshot and the configstrings are both in hand, i.e. tags can be built.

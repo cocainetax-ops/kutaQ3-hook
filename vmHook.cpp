@@ -628,7 +628,13 @@ const q3::refdef_t* Vm::Refdef()
 
 int Vm::ServerTime()
 {
-	if (s_haveRefdef && s_refdef.time != 0)
+	// A refdef older than the newest snapshot is a frozen camera (R_RenderScene stopped
+	// arriving while snapshots kept flowing); BuildView rejects it for the view, and the frame
+	// time must not come from it either or every snapshot age computed from it goes negative.
+	// Small negatives are legitimate - the cgame reads the next snapshot ahead for
+	// interpolation - so only staleness past NameEsp::kRefdefStaleMs falls back.
+	if (s_haveRefdef && s_refdef.time != 0 &&
+	    s_snapshotTime - s_refdef.time <= NameEsp::kRefdefStaleMs)
 		return s_refdef.time;                  // cg.time, i.e. the serverTime this frame renders
 	return s_snapshotTime;
 }
