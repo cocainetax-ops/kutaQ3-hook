@@ -81,6 +81,17 @@ void NameEsp::Draw()
 
 			ScreenPoint p;
 			const bool headOk = ProjectWorldToScreen(frame.view, vp, tag.origin, p);
+			// ProjectWorldToScreen returns coordinates in desktop/window space so callers can
+			// reason about letterboxed viewports. SetupOrtho(), however, deliberately resets the
+			// GL viewport to (0, 0, width, height). Convert the result to that overlay's local
+			// coordinates before drawing. Without this, a non-zero viewport origin (common with
+			// letterbox/split-screen views) makes every raster position land against the left/top
+			// edge even though the world projection itself is correct.
+			if (headOk)
+			{
+				p.x -= (float)vp.x;
+				p.y += (float)vp.y;
+			}
 			if (!headOk || !p.inView)
 			{
 				// The anchor sits 36 units above the player's feet, and up close plus aiming
@@ -91,7 +102,11 @@ void NameEsp::Draw()
 				                   tag.origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
 				ScreenPoint pc;
 				if (ProjectWorldToScreen(frame.view, vp, chest, pc) && pc.inView)
+				{
+					pc.x -= (float)vp.x;
+					pc.y += (float)vp.y;
 					p = pc;                            // on the visible body, full brightness
+				}
 				else if (!headOk)
 				{
 					++s_stats.behind;
