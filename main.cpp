@@ -1116,6 +1116,23 @@ void APIENTRY newglVertexPointer(GLint size, GLenum type, GLsizei stride, const 
 // kutaQ3 hook - ImGui rendering (runs inside the hooked wglSwapBuffers)
 
 // the menu window - called it "kutaQ3 hook"
+// NAME ESP diagnostic: name the snapshot playerState pm_type the menu reports.
+// Mirrors pmtype_t in the engine headers (bg_public.h).
+static const char* PmTypeName(int pmType)
+{
+	switch (pmType)
+	{
+	case 0:  return "normal";
+	case 1:  return "noclip";
+	case 2:  return "spectator";
+	case 3:  return "dead";
+	case 4:  return "frozen";
+	case 5:  return "intermission";
+	case 6:  return "scoreboard intermission";
+	default: return "?";
+	}
+}
+
 void RenderKutaQ3Menu()
 {
 	Config::Settings& cfg = Config::g_Settings;
@@ -1206,8 +1223,28 @@ void RenderKutaQ3Menu()
 					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d name%s on screen",
 					                   esp.playerCount, esp.playerCount == 1 ? "" : "s");
 				else if (esp.valid)
-					ImGui::TextDisabled("snapshot ok, 0 other players in it (%d %s in snapshot)",
-					                    esp.numEntities, esp.numEntities == 1 ? "entity" : "entities");
+				{
+					// Detailed "why no names" report: how many player models the server actually put
+					// in this snapshot (the PVS limit, see vmHook.h), who we are in it, and which
+					// filters consumed the rest. This is the difference between "nobody is being
+					// sent to you" (an engine limit, not an ESP failure) and "players arrive but
+					// every name is rejected" (a real capture/parsing bug).
+					ImGui::TextDisabled("%d player entit%s in snapshot; self #%d (%s, %d hp)",
+					                 esp.playerEntities,
+					                 esp.playerEntities == 1 ? "y" : "ies",
+					                 esp.selfClientNum, PmTypeName(esp.selfPmType), esp.selfHealth);
+					if (esp.playerEntities - esp.skippedDead - esp.skippedSelf == 0)
+					{
+						ImGui::TextDisabled("no live others: PVS - the server only sends players sharing");
+						ImGui::TextDisabled("your visible set; a spectator above the map receives everyone.");
+					}
+					ImGui::TextDisabled("snapshot carries %d %s total", esp.numEntities,
+					                 esp.numEntities == 1 ? "entity" : "entities");
+					if (esp.skippedDead || esp.skippedNoInfo || esp.skippedBadSlot || esp.skippedSelf)
+						ImGui::TextDisabled("skipped: %d dead, %d no name, %d self, %d bad slot",
+						                 esp.skippedDead, esp.skippedNoInfo, esp.skippedSelf,
+						                 esp.skippedBadSlot);
+				}
 				else
 					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
 				ImGui::TextDisabled("cgame: %s", Vm::Status());

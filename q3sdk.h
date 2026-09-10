@@ -69,6 +69,7 @@ namespace q3
 
 	const int kEtPlayer                = 1;       // bg_public.h entityType_t (ET_GENERAL is 0)
 	const int kEfDead                  = 0x00000001;   // bg_public.h:242
+	const int kEfTeleport              = 0x00000004;   // bg_public.h:246, toggled on every teleport
 
 	const int kDefaultViewHeight       = 26;      // bg_public.h:50 (standing eye height)
 

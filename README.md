@@ -159,7 +159,7 @@ that used to force the read into `vmMain`:
 
 | trap | what the hook takes |
 |---|---|
-| `CG_GETSNAPSHOT` | the snapshot the engine just copied into the cgame's buffer: player entity positions + the local `playerState_t` |
+| `CG_GETSNAPSHOT` | every snapshot the cgame requests, kept in a small ring keyed by message number (the newest **and the one before it**): player entity positions + the local `playerState_t` |
 | `CG_GETGAMESTATE` | the address of the cgame's `cgs.gameState`, read live for the `CS_PLAYERS` configstrings |
 | `CG_R_RENDERSCENE` | the `refdef_t` the cgame rendered this frame: the exact `vieworg`, `viewaxis` and `fov_x` |
 | `CG_CM_LOADMAP` | level boundary - everything captured so far is dropped |
@@ -220,12 +220,17 @@ while dead-and-playing or in intermission and its +/-87.9 degree pitch clamp), t
 origin pushed forward by the snapshot's age, `cg_fov` for `fov_x`, and `fov_y` plus the screen
 rectangle from the GL viewport at draw time.
 
-Remote players' positions are smoothed the same way the engine interpolates entities: the previous
-snapshot's sample is kept per client and the resulting velocity carries the tag forward to the
-current frame, so a moving player's tag does not sit a snapshot behind them. If the smoothing
-overshoots to behind the viewer while the snapshot position is still in front (a fast player
-running at the camera on an old snapshot), the tag falls back to the raw snapshot position
-rather than vanishing.
+Remote players are placed **exactly where the renderer places their models**. The cgame never
+velocity-extrapolates players: `CG_InterpolateEntityPosition()` (cg_ents.c) lerps each player
+between the previous and the newest server snapshot with `frameInterpolation = (cg.time -
+old.serverTime) / (new.serverTime - old.serverTime)` clamped to 0..1, and holds the newest
+position while waiting for the next snapshot. The hook does the same: the VM-hook snapshot ring
+gives Gather() both endpoints, the captured refdef's time (`cg.time`) gives the fraction, and a
+player missing from the previous snapshot (just entered the PVS / respawned) or carrying a
+toggled `EF_TELEPORT_BIT` is snapped to the newest position just like `CG_ResetEntity()`. An
+earlier build held only the newest snapshot and velocity-extrapolated from it, which parked the
+tag one server frame ahead of a moving player and stepped it every ~50 ms - the visible
+"jitter"; lerping the engine's own two endpoints glues the tag to the model on every frame.
 
 ### What the server sends you (PVS)
 
@@ -233,10 +238,14 @@ A tag can only be drawn for a player the server put in your snapshot, and the se
 entities in your *potentially visible set* - roughly, the parts of the map your client could
 currently see. A spectator floating above the map is in sight of nearly everything and gets a
 snapshot full of players; a player down in a corridor only gets whoever shares their PVS. That
-is not the ESP failing: "snapshot ok, 0 other players in it" in the menu means exactly this -
-there is nobody nearby to draw, and nobody's position to draw them at. The flip side is that a
-tag for a player behind a wall only appears while that wall's far side is still in your PVS;
-"through walls" reaches exactly as far as the server's visibility reaches, on any client.
+is not the ESP failing. The Name ESP status lines in the menu make it unambiguous on a live
+client: "N player entities in snapshot; self #k (normal, 100 hp)" is what the server actually
+sent you, with separate counters for dead/self/unreadable entries. In first person a player
+outside your visible set simply is not there (the "no live others" line explains the PVS
+limit); the same map seen from a spectator perch reports every player. The flip side is
+that a tag for a player behind a wall only appears while that wall's far side is still in your
+PVS; "through walls" reaches exactly as far as the server's visibility reaches, on any client
+(and the chams have the same limit - a model the server never sent cannot be drawn).
 
 The structures crossing that boundary are mirrored by hand in `q3sdk.h` and `vmFind.h` (the GPL
 headers in `SDK/` stay out of the build - see `SDK/README.md`), and
