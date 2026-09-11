@@ -26,6 +26,26 @@ namespace
 	const int   kMaxSnapshotAgeMs = 250;    // beyond this a snapshot is treated as "where it says"
 	const float kMaxExtrapolatedStep = 200.0f;  // units; ~2x what a player covers in 250 ms
 
+	// How far back Gather() looks for the snapshot it interpolates from when the exact previous
+	// message number is not served (see the snapshot pair below). The VM hook's ring is 6 deep,
+	// so 4 reaches well inside it; a genuine "no older sample exists" (first frames after a level
+	// load) is found just as fast.
+	const int   kPrevSnapshotLookback = 4;
+
+	// The most the interpolation fraction may be pushed ahead of the newest snapshot when the
+	// refdef is missing. One server frame at the default sv_fps 20 is 50 ms; guessing further
+	// than a few frames extrapolates a player past where the model is.
+	const int   kMaxRenderLagMs = 250;
+
+	// The lag between the time a frame renders for (cg.time) and the newest snapshot's own time,
+	// measured on the last frame that had a captured refdef. Vm::ServerTime() hands over the
+	// snapshot time itself when there is no refdef, which clamps the interpolation fraction to
+	// 1.0: the tag then holds the newest position and steps a whole server frame at a time
+	// instead of gliding. Reusing the measured lag across those frames keeps the motion
+	// continuous - the client renders a snapshot interval behind the newest snapshot as a rule.
+	int   s_renderLag      = 0;
+	bool  s_haveRenderLag  = false;
+
 	int ClampAge(int serverTime, int snapshotTime)
 	{
 		int age = serverTime - snapshotTime;
@@ -336,6 +356,13 @@ void NameEsp::Reset()
 	memset(&s_frame, 0, sizeof(s_frame));
 	memset(&s_snapshot, 0, sizeof(s_snapshot));
 	memset(&s_prevSnapshot, 0, sizeof(s_prevSnapshot));
+	// the level is gone: the next snapshot's serverTime is a different clock, so the lag measured
+	// against the old one must not be applied to the first frames of the new one.
+	s_renderLag     = 0;
+	s_haveRenderLag = false;
+	// The GL half keeps per-client state of its own (fade-in ramp, which anchor each tag settled
+	// on) and drops it with the level too - but from vmHook's DropLevelState(), not from here:
+	// this file is the portable half and has no GL to talk to.
 }
 
 bool NameEsp::ParseClientInfo(const char* infoString, int clientNum, PlayerTag& out)
@@ -428,20 +455,32 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 
 	// The cgame renders remote players by interpolating between the previous and the newest
 	// server snapshots (CG_ProcessSnapshots / CG_InterpolateEntityPosition), and the VM hook keeps
-	// a ring of the snapshots it saw the cgame request, so ask for the previous one as well. When
-	// the bridge does not have it (fresh install / first frame after a level load) it serves the
-	// newest one, which we detect from the serverTime and then treat as "no previous sample".
+	// a ring of the snapshots it saw the cgame request, so ask for the previous one as well.
+	//
+	// Walking back more than one number matters. The bridge serves the exact message number when
+	// it still holds it and the NEWEST one when it does not (the real engine's CL_GetSnapshot just
+	// fails, which reads as a miss too), so a miss cannot be told apart from "that is the newest
+	// sample" except by the serverTime - and the exact previous number goes missing whenever the
+	// cgame advanced by more than one server frame since the ring was last filled: a hitch that
+	// skips snapshots, a ring too small to reach back, the first frames after a level load. On
+	// those frames an unlerped position means the tag holds still and then jumps a whole server
+	// frame, which is exactly the stepping the interpolation exists to remove. So keep asking one
+	// number further back until a strictly older sample turns up.
 	bool havePrev = false;
-	if (snapNumber > 0 &&
-	    syscall(q3::CG_GETSNAPSHOT, (intptr_t)(snapNumber - 1),
-	            (intptr_t)&s_prevSnapshot, (intptr_t)sizeof(s_prevSnapshot)))
+	for (int back = 1; back <= kPrevSnapshotLookback && !havePrev; ++back)
 	{
+		const int number = snapNumber - back;
+		if (number < 0)
+			break;
+		if (!syscall(q3::CG_GETSNAPSHOT, (intptr_t)number,
+		             (intptr_t)&s_prevSnapshot, (intptr_t)sizeof(s_prevSnapshot)))
+			continue;                            // aged out of the buffer - try the one before
 		if (s_prevSnapshot.serverTime > 0 &&
 		    s_prevSnapshot.serverTime < s_snapshot.serverTime)
-		{
 			havePrev = true;
-		}
 	}
+	if (!havePrev)
+		memset(&s_prevSnapshot, 0, sizeof(s_prevSnapshot));
 
 	// Zeroed first: the bridge leaves the destination untouched when the gameState is not live
 	// (mid-load), and without this the tags would be named from the previous level's clientinfo.
@@ -457,6 +496,29 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 	s_frame.selfHealth    = s_snapshot.ps.stats[q3::kStatHealth];
 
 	BuildView(serverTime, s_snapshot, syscall, refdef, s_frame.view, s_frame.usedRefdef);
+
+	// ---- the time the tags are interpolated at ---------------------------------------------------
+	// The lerp fraction is (renderTime - prevTime) / (newTime - prevTime), and renderTime has to
+	// be cg.time - the time the frame is being drawn for. A captured refdef carries exactly that
+	// (refdef_t::time), so with one this is serverTime and the measured lag is remembered for the
+	// frames that do not have one.
+	int renderTime = serverTime;
+	if (s_frame.usedRefdef)
+	{
+		// Either sign is real: a positive lag is the client rendering behind the newest snapshot
+		// it holds, a negative one is the cgame having read the NEXT snapshot ahead for
+		// interpolation while the frame is still drawn for an earlier cg.time. Clamping the
+		// magnitude only, so a bogus capture cannot fling the fraction across the map.
+		int lag = serverTime - s_snapshot.serverTime;
+		if (lag >  kMaxRenderLagMs) lag =  kMaxRenderLagMs;
+		if (lag < -kMaxRenderLagMs) lag = -kMaxRenderLagMs;
+		s_renderLag     = lag;
+		s_haveRenderLag = true;
+	}
+	else if (s_haveRenderLag)
+	{
+		renderTime = s_snapshot.serverTime + s_renderLag;
+	}
 
 	// ---- one tag per live player entity ---------------------------------------------------------
 	const int self = s_snapshot.ps.clientNum;
@@ -508,7 +570,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 			havePrev ? FindEntityNumber(s_prevSnapshot, e.number) : NULL;
 		float anchor[3];
 		InterpolatedOrigin(prev, s_prevSnapshot.serverTime, e, s_snapshot.serverTime,
-		                   serverTime, anchor);
+		                   renderTime, anchor);
 		if (prev)
 			++s_frame.interpolatedPlayers;
 

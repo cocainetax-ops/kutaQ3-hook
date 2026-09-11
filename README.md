@@ -162,7 +162,7 @@ that used to force the read into `vmMain`:
 | `CG_GETSNAPSHOT` | every snapshot the cgame requests, kept in a small ring keyed by message number (the newest **and the one before it**): player entity positions + the local `playerState_t` |
 | `CG_GETGAMESTATE` | the address of the cgame's `cgs.gameState`, read live for the `CS_PLAYERS` configstrings |
 | `CG_R_RENDERSCENE` | the `refdef_t` the cgame rendered this frame: the exact `vieworg`, `viewaxis` and `fov_x` |
-| `CG_CM_LOADMAP` | level boundary - everything captured so far is dropped |
+| `CG_CM_LOADMAP` | level boundary - the per-*level* captures are dropped (see below: **not** the configstrings pointer) |
 
 `NameEsp::Gather()` is handed a trampoline (`Vm::Syscall()`) that answers those same trap numbers
 out of the copies, so the portable half of the ESP is unchanged. Pointers resolve the way
@@ -197,20 +197,48 @@ shaped for `1`, `2` and `0` are each accepted, `compiled` and `currentlyInterpre
 without changing the outcome, and the shared invariants still reject a bad record in either mode.
 The status line in the menu reports which one it found.
 
-The pointer is captured from the `CG_GETGAMESTATE` trap, which fires in `CG_Init` and again whenever
-a `"cs"` server command changes a configstring (`CG_ConfigStringModified`). `CG_Init` runs between
-network processing and the next present, so a hook that attaches from the `SwapBuffers` poll always
-misses that first trap (both on first connect and on every map change); the cgame's `gameState_t`
-copy is then found by scanning its data segment for the right *shape* - the set (nonzero) string
-offsets strictly increasing and inside the 16000-byte pool, with zero gaps for the majority of the
-1024 indices a real server never sets, a serverinfo with a `mapname`, and at least one `CS_PLAYERS`
-infostring. The scan runs on the first poll after the VM record exists, which is while the loading
-screen renders, so names are present the moment control returns. (An earlier shape check demanded
-that *all 1024* offsets be nonzero and increasing, which no shipped server ever produces: the scan
-then failed until the first runtime `"cs"` command happened to re-fire the trap - a dropped weapon
-or a player joining, typically a minute or more into the map - and names appeared "by themselves".)
-This is also what made spectator mode look fine immediately: joining the spectator team rewrites
-your own `CS_PLAYERS` configstring and re-fires the trap at once.
+### Where the configstrings come from, and why names used to take a minute to appear
+
+The pointer to the cgame's `gameState_t` copy (`cgs.gameState`, read live for `CS_PLAYERS`) is
+captured from the `CG_GETGAMESTATE` trap. That trap fires in `CG_Init` and again whenever a `"cs"`
+server command changes a configstring (`CG_ConfigStringModified`). The trap is the *authoritative*
+source - it is the cgame handing over the address of its own global - and the memory scan described
+below is only the fallback for a late inject, when no trap has fired since the hook attached.
+
+Keeping it that way took three fixes; each one on its own still left a window where every name was
+skipped, and `Gather()` skips a player with no name rather than guessing one.
+
+1. **The level boundary used to throw the pointer away.** `CG_Init` calls `trap_GetGameState` and
+   *then* `trap_CM_LoadMap` (SDK/code/cgame/cg_main.c), and the `CG_CM_LOADMAP` case dropped
+   *everything* captured so far - on the reasoning that all of it belonged to the level that had
+   just ended. That is true of the snapshots, the camera and the last usercmd, and false of the
+   address `CG_Init` had handed over microseconds earlier: `cgs.gameState` is a global inside the
+   cgame, so a level change re-fills it in place rather than moving it. So every map change started
+   with no configstrings at all, and names only came back when something re-fired the trap. The
+   level boundary now drops the per-level captures (`DropLevelState()`) and leaves the pointer
+   alone; it is dropped only when the VM instance that owns it is gone, which is compared against
+   the identity the pointer was *taken* under (`VmFind::SameVmInstance`) rather than against the last
+   one seen - a level change inside one instance changes neither `dataBase` nor `dllHandle`.
+2. **The liveness check asserted an invariant the engine breaks.** `GameStateLooksLive()` required
+   `stringOffsets[CS_SERVERINFO] == 1`, true in a freshly parsed gamestate because the serverinfo is
+   the first string `CL_SetConfigstring()` appends. The same function appends at the *end* of the
+   pool for every runtime `"cs"`, so the first update of `CS_SERVERINFO` moves that offset to the
+   highest in the table - and from then on the bridge reported a perfectly good copy as dead, so
+   names stopped *and stayed stopped* until the next trap, and the scan could never find the copy
+   again either. The check is now "the used pool is inside the 16000-byte limit and `CS_SERVERINFO`
+   points into it", which holds for a live copy at any time.
+3. **The scan's shape check assumed the offsets stay in index order.** They do not, for the same
+   reason: from the first runtime configstring update on, a low index carries the highest offset.
+   The checks are now order independent - every set offset lands inside the pool, no two set indices
+   share one, every set string is terminated and control-character free, `CS_SERVERINFO` carries
+   `\mapname\`, and at least one `CS_PLAYERS` slot holds an infostring - so the fallback recognises
+   a live copy whenever it runs instead of only in the first seconds after a parse.
+
+The menu status line says which source the names are coming from (`configstrings: cgame trap, 12s
+old` / `memory scan` / `not found yet`). Read that first if names ever go missing: a `cgame trap`
+line with names missing is a gathering problem, a `memory scan` line means the authoritative capture
+never arrived, and `not found yet` means neither did.
+
 
 ### The view
 
@@ -241,6 +269,38 @@ toggled `EF_TELEPORT_BIT` is snapped to the newest position just like `CG_ResetE
 earlier build held only the newest snapshot and velocity-extrapolated from it, which parked the
 tag one server frame ahead of a moving player and stepped it every ~50 ms - the visible
 "jitter"; lerping the engine's own two endpoints glues the tag to the model on every frame.
+
+### Smoothness: what makes a tag glide instead of step
+
+Three things between "the tag tracks the model" and "the tag looks like part of the scene":
+
+- **The previous sample is searched for, not assumed.** The lerp needs the snapshot the engine
+  interpolates *from*, and `Gather()` used to ask for exactly `newest - 1`. The bridge answers a
+  message number its ring no longer holds with the *newest* snapshot, so a miss is
+  indistinguishable from "that is the newest sample" except by its `serverTime` - and the exact
+  previous number goes missing whenever the cgame advanced by more than one server frame since the
+  ring was last filled (a hitch, the first frames after a level load). Those frames lost the
+  interpolation entirely: the tag held still, then jumped a whole server frame. `Gather()` now walks
+  back up to 4 numbers until a strictly older sample turns up, which covers both the bridge's
+  fallback and the real engine's "aged out of the buffer" answer.
+- **The interpolation clock survives a missing refdef.** The fraction is measured at `cg.time`,
+  which only exists in a captured `refdef_t`. Without one, `Vm::ServerTime()` hands over the newest
+  snapshot's own time, which clamps the fraction to 1.0 - the tag stops dead and steps. The lag
+  between `cg.time` and the newest snapshot is measured on every frame that has a refdef and reused
+  on the ones that do not (clamped to +/-250 ms, and dropped by `Reset()`), so a frame without a
+  refdef keeps the tag where the model is instead of snapping it to the newest server position.
+- **Tags fade in, and the chest anchor holds.** A tag ramps its alpha up over 220 ms rather than
+  popping into existence, keyed by client number so a player who flickers out of the PVS and back
+  inside a few frames keeps their alpha instead of blinking (the overlay turns blending on for it;
+  at full alpha the blend is a no-op, so a settled tag is pixel-identical to the old opaque draw).
+  And the head-to-chest re-anchor, which kicks in up close when the anchor above the head leaves the
+  screen, no longer gives the chest back on the first frame the head anchor reappears: aiming up
+  and down across that boundary used to swap the anchor every other frame and hop the name between
+  two points a head apart. Moving *to* the chest is still immediate; moving back waits three frames.
+
+Both the fade and the anchor choice are per-client state that outlives a frame, so they are dropped
+with the level (`NameEsp::ResetDrawState()`, called from the VM hook's level-boundary drop) and
+advance once per `Draw()` rather than once per tag.
 
 ### What the server sends you (PVS)
 
@@ -340,9 +400,9 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing, and the projection - checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
-| `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject. |
-| `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours and strings actually issued for a frame can be asserted on. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
+| `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames and the chest anchor holding its ground. |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.

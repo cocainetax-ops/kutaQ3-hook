@@ -22,6 +22,12 @@ namespace
 	int  s_snapshotNum = 1;       // cl.snap.messageNum, starts at the first live frame
 	char s_fov[32]     = "90";
 
+	// How many message numbers back the previous snapshot is served from, and whether a number
+	// that is not held fails (CL_GetSnapshot, what the real engine does) or is served the newest
+	// one instead (vmHook.cpp's ring, what Gather() actually runs against). See the setters.
+	int  s_prevGap             = 1;
+	bool s_serveNewestOnMiss   = false;
+
 	int s_snapshotRequests  = 0;
 	int s_gameStateRequests = 0;
 	int s_userCmdRequests   = 0;
@@ -118,16 +124,23 @@ namespace
 			++s_snapshotRequests;
 			if (!s_connected)
 				return 0;                                  // CL_GetSnapshot says "not valid"
-			// Like CL_GetSnapshot: only the newest number and the one before it (the pair the
-			// cgame interpolates) are still in the circular buffer.
+			// Only the newest number and the previous sample (s_prevGap numbers back) are still in
+			// the circular buffer. Everything else fails, like the engine - or, with
+			// SetServeNewestOnMiss(), is answered with the newest snapshot the way vmHook.cpp's
+			// bridge answers a number its ring no longer holds.
 			if ((int)args[1] == s_snapshotNum)
 			{
 				*(q3::snapshot_t*)args[2] = s_snapshot;
 				return 1;
 			}
-			if (s_havePrev && (int)args[1] == s_snapshotNum - 1)
+			if (s_havePrev && (int)args[1] == s_snapshotNum - s_prevGap)
 			{
 				*(q3::snapshot_t*)args[2] = s_prevSnapshot;
+				return 1;
+			}
+			if (s_serveNewestOnMiss)
+			{
+				*(q3::snapshot_t*)args[2] = s_snapshot;
 				return 1;
 			}
 			return 0;                                      // aged out of the buffer, like the engine
@@ -178,6 +191,8 @@ namespace FakeEngine
 		s_havePrev          = false;
 		s_snapshotNum       = 1;
 		s_cmdNumber         = 7;
+		s_prevGap           = 1;
+		s_serveNewestOnMiss = false;
 		strcpy(s_fov, "90");
 		s_snapshotRequests  = 0;
 		s_gameStateRequests = 0;
@@ -204,6 +219,9 @@ namespace FakeEngine
 
 	void SetConnected(bool connected)   { s_connected = connected; }
 	void SetSnapshotTime(int serverTime){ s_snapshot.serverTime = serverTime; }
+
+	void SetPrevNumberGap(int gap)      { s_prevGap = (gap > 0) ? gap : 1; }
+	void SetServeNewestOnMiss(bool on)  { s_serveNewestOnMiss = on; }
 	void SetServerTime(int)             { /* the caller passes it to Gather() directly */ }
 
 	void SetLocalPlayer(int clientNum, const float origin[3], const float velocity[3],

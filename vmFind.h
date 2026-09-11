@@ -43,12 +43,15 @@
 //
 // The same trick locates the configstrings: the cgame keeps its own copy of the engine's
 // gameState_t in its data segment (cgs.gameState, filled by trap_GetGameState() in CG_Init), and a
-// gameState_t is recognisable by shape - the nonzero string offsets (strictly increasing and all
-// inside the 16000 byte string pool, with zero gaps for indices the server never set), a
-// serverinfo carrying the mapname, and CS_PLAYERS entries pointing at "\n\...\t\..." infostrings.
-// That is what makes injecting into a map that is already running work: the CG_GETGAMESTATE trap
-// that hands the address over only fires at level load, so on a late inject the copy is found by
-// scanning instead.
+// gameState_t is recognisable by shape - distinct nonzero string offsets that all land inside the
+// 16000 byte string pool (with zero gaps for indices the server never set), each pointing at a
+// terminated, control-character-free string, a serverinfo carrying the mapname, and CS_PLAYERS
+// entries pointing at "\n\...\t\..." infostrings. The checks are deliberately ORDER INDEPENDENT:
+// CL_ParseGamestate() appends the configstrings in ascending index order, but CL_SetConfigstring()
+// appends again every time one changes at runtime, so a live copy stops having ascending offsets
+// the moment any lower index is updated. That is what makes injecting into a map that is already
+// running work: the CG_GETGAMESTATE trap that hands the address over only fires at level load and
+// on a configstring change, so on a late inject the copy is found by scanning instead.
 //
 // Nothing in this file needs Windows, so tests/test_vmfind.cpp builds a real vm_t / gameState_t
 // from the SDK headers and checks the scanners against it.
@@ -127,7 +130,26 @@ namespace VmFind
 	// cgs.gameState). Returns false when nothing passes the shape checks.
 	bool FindGameState(const void* region, size_t size, const q3::gameState_t** out);
 
+	// The full shape check FindGameState accepts a candidate with, exposed so a pointer that is
+	// already in hand can be re-validated later: a copy found by scanning could be the wrong
+	// thing, and a copy that stopped matching is stale. Costlier than GameStateLooksLive() (it
+	// walks every set configstring), so call it on a timer, not per frame.
+	bool GameStateIsUsable(const q3::gameState_t* gs);
+
 	// Cheap re-check for a gameState_t already in hand: is this still a live copy, or has the hunk
 	// moved on since the address was captured? Two int reads, safe to call every frame.
 	bool GameStateLooksLive(const q3::gameState_t* gs);
+
+	// ------------------------------------------------------------------------------------------
+	// Does a pointer captured out of the cgame (its gameState copy) still belong to the VM
+	// instance the record describes?
+	//
+	// A bytecode VM's globals live in the hunk data segment VM_Create() allocated (dataBase) and a
+	// native DLL cgame's in the loaded module (dllHandle), so either changing means every pointer
+	// captured from the previous instance points somewhere else. The important half of this is
+	// what it says about the case where neither changed: a LEVEL CHANGE does not move the cgame's
+	// globals - CG_Init re-fills cgs.gameState in place - so a pointer captured under this
+	// identity stays valid across map changes and must not be thrown away at the level boundary.
+	// ------------------------------------------------------------------------------------------
+	bool SameVmInstance(const Record& rec, uint32_t capturedDataBase, uint32_t capturedDllHandle);
 }

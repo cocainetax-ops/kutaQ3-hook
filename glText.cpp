@@ -54,27 +54,50 @@ float GL::Font::TextWidth(const char *text)
 }
 
 
+namespace
+{
+	// The shared body of Print() / PrintAlpha(): format the string, set the raster position and
+	// call the glyph lists. The colour is set by the caller, so the two entry points differ only
+	// in whether they set an alpha.
+	void EmitText(const GL::Font& font, float x, float y, const char* format, va_list args)
+	{
+		char text[100];
+		vsprintf_s(text, 100, format, args);
+
+		glRasterPos2f(x, y);
+		//read https://stackoverflow.com/questions/34780950/text-wont-output-on-screen-c-opengl
+
+		glPushAttrib(GL_LIST_BIT);
+		glListBase(font.base - 32);
+		glCallLists(strlen(text), GL_UNSIGNED_BYTE, text);
+
+		glPopAttrib();
+	}
+}
+
 //replaced glRasterPos2f  with glWindowPos2d
 void GL::Font::Print(float x, float y, const unsigned char color[3], const char *format, ...)
 {
-
 	glColor3ub(color[0], color[1], color[2]);
-	glRasterPos2f(x, y);
- //read https://stackoverflow.com/questions/34780950/text-wont-output-on-screen-c-opengl
 
-
-	char text[100];
-	va_list    args;
-
+	va_list args;
 	va_start(args, format);
-	vsprintf_s(text, 100, format, args);
+	EmitText(*this, x, y, format, args);
 	va_end(args);
+}
 
-	glPushAttrib(GL_LIST_BIT);
-	glListBase(base - 32);
-	glCallLists(strlen(text), GL_UNSIGNED_BYTE, text);
+void GL::Font::PrintAlpha(float x, float y, const unsigned char color[3], float alpha,
+                          const char *format, ...)
+{
+	if (alpha < 0.0f) alpha = 0.0f;
+	if (alpha > 1.0f) alpha = 1.0f;
 
-	glPopAttrib();
+	glColor4f((float)color[0] / 255.0f, (float)color[1] / 255.0f, (float)color[2] / 255.0f, alpha);
+
+	va_list args;
+	va_start(args, format);
+	EmitText(*this, x, y, format, args);
+	va_end(args);
 }
 
 vec3 GL::Font::centerText(float x, float y, float width, float height, float textWidth, float textHeight)

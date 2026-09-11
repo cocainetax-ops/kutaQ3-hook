@@ -39,6 +39,8 @@ typedef double         GLclampd;
 #define GL_QUADS               0x0007
 #define GL_MODELVIEW           0x1700
 #define GL_PROJECTION          0x1701
+#define GL_SRC_ALPHA           0x0302
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
 
 // ---- recording entry points --------------------------------------------------------------------
 inline void glGetIntegerv(GLenum pname, GLint* params)
@@ -80,16 +82,32 @@ inline void glVertex2i(GLint x, GLint y)     { Rec::Push2("glVertex2i", x, y); }
 
 inline void glColor3f(GLfloat r, GLfloat g, GLfloat b)
 {
-	Rec::StateRef().rgb = ((unsigned int)(r * 255.0f) << 16) |
-	                      ((unsigned int)(g * 255.0f) << 8) |
-	                      ((unsigned int)(b * 255.0f));
+	Rec::StateRef().rgb   = ((unsigned int)(r * 255.0f) << 16) |
+	                        ((unsigned int)(g * 255.0f) << 8) |
+	                        ((unsigned int)(b * 255.0f));
+	Rec::StateRef().alpha = 1.0f;
 	Rec::Push3("glColor3f", r, g, b);
 }
 
 inline void glColor3ub(GLubyte r, GLubyte g, GLubyte b)
 {
-	Rec::StateRef().rgb = ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+	Rec::StateRef().rgb   = ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+	Rec::StateRef().alpha = 1.0f;
 	Rec::Push3("glColor3ub", r, g, b);
+}
+
+inline void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+{
+	Rec::StateRef().rgb   = ((unsigned int)(r * 255.0f) << 16) |
+	                        ((unsigned int)(g * 255.0f) << 8) |
+	                        ((unsigned int)(b * 255.0f));
+	Rec::StateRef().alpha = a;
+	Rec::Push4("glColor4f", r, g, b, a);
+}
+
+inline void glBlendFunc(GLenum sfactor, GLenum dfactor)
+{
+	Rec::Push2("glBlendFunc", (double)sfactor, (double)dfactor);
 }
 
 inline void glRasterPos2f(GLfloat x, GLfloat y) { Rec::Push2("glRasterPos2f", x, y); }

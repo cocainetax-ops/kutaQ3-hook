@@ -49,6 +49,18 @@ namespace FakeEngine
 	void NewServerFrame(int newServerTime);
 	void SetNonPlayerEntity(int number, const float origin[3]);   // ET_ITEM etc. - must be ignored
 
+	// How the snapshot ring answers a number it does not hold.
+	//
+	// The default is CL_GetSnapshot's behaviour - a miss fails. The VM hook's bridge is different:
+	// it serves the NEWEST snapshot when the requested number has aged out of its ring, so a miss
+	// looks exactly like "that is the newest sample" and can only be told apart by the serverTime.
+	void SetServeNewestOnMiss(bool on);
+
+	// Where the previous sample sits, in message numbers back from the newest (default 1). A gap
+	// of 2 or more is what the ring looks like when the cgame advanced by more than one server
+	// frame - a hitch, or the first frames after a level load - and number newest-1 is gone.
+	void SetPrevNumberGap(int gap);
+
 	// ---- the trampoline -------------------------------------------------------------------------
 	q3::syscall_t Syscall();
 

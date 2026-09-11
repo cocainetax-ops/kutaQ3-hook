@@ -38,8 +38,24 @@ namespace
 		q3::snapshot_t snap;
 	};
 	SnapSlot               s_snaps[kSnapRingSize];
+
+	// How often a copy found by SCANNING is re-checked against the full gameState shape. The trap
+	// capture is the cgame's own address and needs no re-check; a scan is a guess, so it is
+	// verified on a timer (the check walks every configstring) instead of every frame.
+	const int kShapeCheckMs = 5000;
+
 	q3::refdef_t           s_refdef;
 	const q3::gameState_t* s_gameState      = NULL;   // cgs.gameState, inside the cgame's memory
+	// The VM instance s_gameState was read out of, and where it came from. The pointer is to a
+	// global inside the cgame, so it stays valid across level changes as long as the instance
+	// that owns it is still the live one (VmFind::SameVmInstance) - it is only stale when the
+	// engine loaded a different data segment or a different cgame module. s_gsFromScan feeds the
+	// status line: a trap capture is the cgame handing over its own address, a scan is a guess.
+	uint32_t               s_gsDataBase     = 0;
+	uint32_t               s_gsDllHandle    = 0;
+	bool                   s_gsFromScan     = false;
+	DWORD                  s_gsStampMs      = 0;      // when the pointer was (re)acquired
+	DWORD                  s_lastShapeCheckMs = 0;    // last full shape re-check of that pointer
 	bool                   s_haveSnapshot   = false;
 	bool                   s_haveRefdef     = false;
 	int                    s_snapshotNumber = 0;
@@ -191,9 +207,35 @@ namespace
 		return found;
 	}
 
+	// -------------------------------------------------------------------------------------------
+	// the gameState pointer: one owner, one place that sets it
+	//
+	// Two sources: the CG_GETGAMESTATE trap (the cgame handing over the address of its own
+	// cgs.gameState - authoritative) and the scan below (a guess made when no trap has fired
+	// since the hook attached). Both go through here so the instance identity is always recorded
+	// next to the pointer, which is what lets a level change keep it instead of dropping it.
+	// -------------------------------------------------------------------------------------------
+	void SetGameState(const q3::gameState_t* gs, bool fromScan)
+	{
+		s_gameState   = gs;
+		s_gsFromScan  = fromScan;
+		s_gsStampMs   = timeGetTime();
+		s_gsDataBase  = s_vm ? s_vm->dataBase  : 0;
+		s_gsDllHandle = s_vm ? s_vm->dllHandle : 0;
+	}
+
+	void ClearGameState()
+	{
+		s_gameState   = NULL;
+		s_gsFromScan  = false;
+		s_gsDataBase  = 0;
+		s_gsDllHandle = 0;
+	}
+
 	// The cgame keeps its own copy of the engine's gameState (cgs.gameState). The trap that hands
 	// the address over only fires in CG_Init, so when the DLL is injected into a map that is
-	// already running it is located by shape instead - see vmFind.h.
+	// already running it is located by shape instead - see vmFind.h. A scan that finds nothing
+	// leaves whatever pointer was there alone: a guess is only replaced by a better guess.
 	bool ScanForGameState()
 	{
 		if (!s_vm)
@@ -218,7 +260,7 @@ namespace
 			const q3::gameState_t* gs = NULL;
 			if (VmFind::FindGameState(region, size, &gs))
 			{
-				s_gameState = gs;
+				SetGameState(gs, true);
 				found = true;
 				Log("[kutaQ3] cgame gameState at %p (found by scanning %u bytes)",
 				    (const void*)gs, (unsigned)size);
@@ -231,12 +273,23 @@ namespace
 	// captured state
 	// -------------------------------------------------------------------------------------------
 
-	void DropCaptured()
+	// The per-LEVEL captures: everything the cgame handed over while rendering the level that has
+	// just ended. Positions, the camera and the last usercmd of the previous level are worse than
+	// nothing - a tag built from them sits somewhere in a map that no longer exists.
+	//
+	// Deliberately NOT included: s_gameState. That pointer is to a global inside the cgame, it is
+	// re-filled by CG_Init's trap_GetGameState() rather than re-allocated, and the copy is read
+	// live through it - so it survives a level change. This used to drop it too, on the reasoning
+	// that "everything captured so far belongs to the previous level", which is true of the
+	// snapshots and false of the address CG_Init had handed over microseconds earlier. Dropping it
+	// left every map change dependent on the scan finding the copy again, and until that happened
+	// every name was skipped: tags appeared only when the next "cs" server command re-fired the
+	// trap, which is the 10-60 second "no names" gap after joining / changing map.
+	void DropLevelState()
 	{
 		memset(s_snaps, 0, sizeof(s_snaps));
 		memset(&s_refdef, 0, sizeof(s_refdef));
 		memset(&s_userCmd, 0, sizeof(s_userCmd));
-		s_gameState      = NULL;
 		s_haveSnapshot   = false;
 		s_haveRefdef     = false;
 		s_haveUserCmd    = false;
@@ -246,6 +299,14 @@ namespace
 		// s_fov / s_haveFov survive: cg_fov is a client cvar, not per-level state, so the last
 		// captured value is still what the cgame would read after the reload.
 		NameEsp::Reset();
+		NameEsp::ResetDrawState();      // the GL half's per-client state goes with the level too
+	}
+
+	// Everything, including the gameState pointer: the VM instance that owned them is gone.
+	void DropCaptured()
+	{
+		DropLevelState();
+		ClearGameState();
 	}
 
 	// VM_ArgPtr() (vm.c), spelled out: a native VM passes real host pointers and has dataBase 0, a
@@ -305,9 +366,13 @@ namespace
 			// again on EVERY "cs" server command (cg_servercmds.c), i.e. whenever any configstring
 			// changes. Either way the address is &cgs.gameState; the copy is read live rather than
 			// kept here so that configstring changes show up without a re-scan.
+			//
+			// CG_Init calls this BEFORE trap_CM_LoadMap (cg_main.c: trap_GetGameState, then
+			// CG_ParseServerinfo, then trap_CM_LoadMap), so this is the first thing the hook sees
+			// of a new level - and the level boundary below must not throw it away.
 			const uintptr_t dest = Resolve(args[1]);
 			if (dest)
-				s_gameState = (const q3::gameState_t*)dest;
+				SetGameState((const q3::gameState_t*)dest, false);
 			break;
 		}
 
@@ -387,9 +452,11 @@ namespace
 		}
 
 		case q3::CG_CM_LOADMAP:
-			// CG_Init loads the collision map right after trap_GetGameState: the hunk has already
-			// been cleared, so everything captured so far belongs to the previous level.
-			DropCaptured();
+			// CG_Init loads the collision map right after trap_GetGameState, i.e. at the start of
+			// the new level: every position and camera captured while rendering still describes
+			// the level that ended. The gameState pointer does not - it was captured a moment ago,
+			// in THIS CG_Init, and points at the new cgame's cgs.gameState.
+			DropLevelState();
 			break;
 
 		default:
@@ -567,6 +634,15 @@ namespace
 		if (!s_attached)
 			return;                                 // AttachSystemCall() already reported why
 
+		// Where the CS_PLAYERS configstrings came from, and how long the pointer has been held.
+		// "cgame trap" is the cgame handing over the address of its own cgs.gameState (CG_Init,
+		// then every "cs" command); "memory scan" means no trap has fired since the hook attached
+		// and the copy was located by shape instead. This is the line to read when names are
+		// missing after a map change: "not found yet" is a gathering failure, and a scan means the
+		// authoritative capture never arrived.
+		const char*    source = s_gsFromScan ? "memory scan" : "cgame trap";
+		const unsigned ageS   = (unsigned)((timeGetTime() - s_gsStampMs) / 1000u);
+
 		char kind[96];
 		strncpy_s(kind, VmKind(), _TRUNCATE);
 		if (s_native && q3::IsNativeCgameModule(s_vm->fqpath))
@@ -577,7 +653,10 @@ namespace
 				if (*p == '\\' || *p == '/' || *p == ':')
 					path = p + 1;
 			}
-			SetStatus("hooked, native cgame %s", path);
+			if (!s_gameState)
+				SetStatus("hooked, native cgame %s - configstrings not found yet", path);
+			else
+				SetStatus("hooked, native cgame %s - configstrings: %s, %us old", path, source, ageS);
 			return;
 		}
 
@@ -586,7 +665,7 @@ namespace
 		else if (!s_gameState)
 			SetStatus("hooked, %s - configstrings not found yet", kind);
 		else
-			SetStatus("hooked, %s", kind);
+			SetStatus("hooked, %s - configstrings: %s, %us old", kind, source, ageS);
 	}
 }
 
@@ -641,22 +720,45 @@ bool Vm::Poll()
 
 	if (s_vm)
 	{
-		// a new VM instance means a new hunk segment (or a new cgame DLL): every pointer captured
-		// from the old one is stale
+		// A new VM instance means a new hunk segment (or a new cgame DLL): every pointer captured
+		// from the old one points somewhere else. Compared against the identity the pointer was
+		// TAKEN under, not against the last one seen: a level change inside one instance leaves
+		// both unchanged, and the pointer to the cgame's own global stays good across it.
+		if (s_gameState && !VmFind::SameVmInstance(*s_vm, s_gsDataBase, s_gsDllHandle))
+		{
+			Log("[kutaQ3] cgame VM instance changed - the configstrings pointer is stale");
+			ClearGameState();
+		}
+
 		if (s_vm->dataBase != s_lastDataBase || s_vm->dllHandle != s_lastDllHandle)
 		{
 			Log("[kutaQ3] cgame VM reloaded (data %p -> %p)",
 			    (void*)(uintptr_t)s_lastDataBase, (void*)(uintptr_t)s_vm->dataBase);
-			DropCaptured();
+			DropLevelState();                   // the level is over; the pointer was judged above
 			s_lastDataBase  = s_vm->dataBase;
 			s_lastDllHandle = s_vm->dllHandle;
 		}
 
-		// late inject, or a level the configstrings were never seen for
+		// Late inject (no trap has fired since the hook attached), or a pointer into memory the
+		// hunk has since reused. Only a pointer that is missing or plainly dead is replaced - a
+		// pointer the trap handed over is kept until the instance that owns it is gone.
 		if (!s_gameState || !VmFind::GameStateLooksLive(s_gameState))
 		{
-			s_gameState = NULL;
+			ClearGameState();
 			ScanForGameState();
+		}
+		else if (now - s_lastShapeCheckMs >= kShapeCheckMs)
+		{
+			// A copy the SCAN found is a guess, so re-check it against the full shape on a timer
+			// (too costly per frame: it walks every configstring). A pointer that no longer
+			// matches gets one rescan attempt; when the scan has nothing better the old pointer is
+			// kept, because "names might be wrong" beats "no names until the next cs command".
+			s_lastShapeCheckMs = now;
+			if (s_gsFromScan && !VmFind::GameStateIsUsable(s_gameState))
+			{
+				Log("[kutaQ3] the scanned gameState copy no longer matches - rescanning");
+				ScanForGameState();
+			}
 		}
 	}
 

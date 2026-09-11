@@ -49,17 +49,46 @@ namespace
 		return strstr(s, pattern) != NULL;
 	}
 
+	// A configstring: printable (player names may carry high bytes), NUL terminated inside the
+	// pool. Garbage bytes are overwhelmingly either control characters or an unterminated run, so
+	// this is what rejects the false positives the cheap offset check lets through.
+	bool StringLooksConfig(const char* s, size_t maxLen)
+	{
+		if (!s || maxLen == 0)
+			return false;
+		for (size_t i = 0; i < maxLen; ++i)
+		{
+			const unsigned char c = (unsigned char)s[i];
+			if (c == 0)
+				return i > 0;
+			if (c < 32)
+				return false;                          // control byte: not a configstring
+		}
+		return false;                                  // runs off the pool without a terminator
+	}
+
 	// -------------------------------------------------------------------------------------------
 	// A gameState_t is 1024 string offsets, a 16000 byte packed string pool and a used byte count.
 	// CL_ParseGamestate() appends each configstring the server enumerates (in ascending index
-	// order, SV_SendClientGameState loops i = 0..MAX_CONFIGSTRINGS), and CL_SetConfigstring()
-	// rebuilds the pool the same way when one changes at runtime; the offsets of the indices that
-	// were actually set are therefore strictly increasing and all index the pool. Indices the
-	// server never sends (unused model/sound slots, empty player slots, ...) stay zero, and the
-	// majority of the 1024 are zero on a live level. Skipping those zero gaps is what recognises
-	// a real gameState in a megabyte of VM data - an earlier check required every one of the
-	// 1024 offsets to be nonzero and increasing, which no shipped server ever produces, so the
-	// scan failed until the first runtime "cs" command happened to re-fire CG_GETGAMESTATE.
+	// order, SV_SendClientGameState loops i = 0..MAX_CONFIGSTRINGS), so right after a parse the
+	// offsets of the indices that were set are strictly increasing. CL_SetConfigstring() then
+	// appends AGAIN whenever one changes at runtime, which puts the newest string at the end of
+	// the pool no matter what its index is: from the first "cs" that updates a lower index than
+	// the highest one set (a warmup countdown, a team or model change, a mod's own configstring)
+	// onwards the offsets are NOT in index order any more. Every check below is therefore order
+	// independent, so the scan recognises a live copy at any moment instead of only in the first
+	// seconds after a gamestate parse:
+	//
+	//   - every set (nonzero) offset lands inside the pool, and no two set indices share one -
+	//     CL_SetConfigstring() always appends, so two offsets can never be equal;
+	//   - every set string is terminated inside the pool and control-character free;
+	//   - CS_SERVERINFO carries \mapname\ and at least one CS_PLAYERS slot holds an infostring.
+	//
+	// Indices the server never sends (unused model/sound slots, empty player slots, ...) stay
+	// zero, and the majority of the 1024 are zero on a live level. Skipping those zero gaps is
+	// what recognises a real gameState in a megabyte of VM data - an earlier check required every
+	// one of the 1024 offsets to be nonzero and increasing, which no shipped server ever produces,
+	// so the scan failed until a runtime "cs" command happened to re-fire CG_GETGAMESTATE.
 	// -------------------------------------------------------------------------------------------
 	bool LooksLikeGameState(const q3::gameState_t* gs)
 	{
@@ -70,22 +99,30 @@ namespace
 
 		const int count = gs->dataCount;
 
-		// Walk the set slots (nonzero offsets) in ascending index order: their offsets were
-		// appended in that order, so they must be strictly increasing and inside the pool.
-		int prev = 0;
+		int setOffsets[q3::kMaxConfigStrings];
 		int setCount = 0;
 		for (int i = 0; i < q3::kMaxConfigStrings; ++i)
 		{
 			const int offset = gs->stringOffsets[i];
 			if (offset == 0)
 				continue;                               // index never set: a gap, not corruption
-			if (offset <= prev || offset >= count)
-				return false;
-			prev = offset;
-			++setCount;
+			if (offset < 1 || offset >= count)
+				return false;                           // outside the pool it cannot index
+			for (int j = 0; j < setCount; ++j)
+			{
+				if (setOffsets[j] == offset)
+					return false;                       // two indices, one string: not a pool
+			}
+			setOffsets[setCount++] = offset;
 		}
 		if (setCount < 2)
 			return false;                              // serverinfo plus at least one more string
+
+		for (int i = 0; i < setCount; ++i)
+		{
+			if (!StringLooksConfig(gs->stringData + setOffsets[i], (size_t)(count - setOffsets[i])))
+				return false;
+		}
 
 		// the pool starts with the serverinfo, and the clientinfo block has to hold at least one
 		// player: an empty gameState (loading screen, wrong structure) is not what we want
@@ -112,11 +149,45 @@ bool VmFind::GameStateLooksLive(const q3::gameState_t* gs)
 		return false;
 
 	// CL_ParseGamestate() starts dataCount at 1 - the zero byte every configstring is read against
-	// - and assigns stringOffsets[0] before appending the first string, so it is 1 too.
+	// - so a live copy always has a used pool within the 16000 byte limit, and CS_SERVERINFO
+	// (which every server sends) points into it. Two int reads, safe to call every frame.
+	//
+	// The offset of CS_SERVERINFO is deliberately NOT required to be 1. It is 1 in a freshly
+	// parsed gamestate, because the serverinfo is the first string CL_SetConfigstring() appends -
+	// but that same function appends at the END of the pool for every runtime "cs" server command,
+	// so the first update of CS_SERVERINFO moves its offset to the highest in the table. Keying on
+	// it made this check - and with it the bridge that serves the configstrings to Gather() -
+	// report a perfectly good copy as dead from that moment on, and the scan could never find it
+	// again either: names stopped, and stayed stopped until the next CG_GETGAMESTATE happened to
+	// re-capture the address.
 	const int count = gs->dataCount;
 	if (count <= 1 || count > q3::kMaxGamestateChars)
 		return false;
-	return gs->stringOffsets[0] == 1;
+	const int serverInfo = gs->stringOffsets[0];
+	return serverInfo >= 1 && serverInfo < count;
+}
+
+bool VmFind::GameStateIsUsable(const q3::gameState_t* gs)
+{
+	return LooksLikeGameState(gs);
+}
+
+bool VmFind::SameVmInstance(const Record& rec, uint32_t capturedDataBase, uint32_t capturedDllHandle)
+{
+	// A different cgame module was loaded (or one where there was none): every pointer captured
+	// from the old one points into freed / foreign memory.
+	if (rec.dllHandle != capturedDllHandle)
+		return false;
+
+	// Native DLL cgame: the module is the identity. VM_Create() never touches dataBase on the
+	// native path, so it is 0 in both and carries no information.
+	if (rec.dllHandle != 0)
+		return true;
+
+	// Bytecode: the hunk segment VM_Create() allocated is the identity. Same segment, same
+	// instance - which is also the level-change case, and exactly when a captured pointer to the
+	// cgame's own globals must survive.
+	return rec.dataBase == capturedDataBase;
 }
 
 // =============================================================================================== //

@@ -128,6 +128,17 @@ namespace
 		// server never set
 	}
 
+	// A live copy that has been running for a while: CL_SetConfigstring() answers a runtime "cs"
+	// server command by appending the new value at the END of the pool and pointing the index at
+	// it, whatever that index is. Updating CS_SERVERINFO (index 0, as "cs 0 ..." does) therefore
+	// leaves the lowest index carrying the highest offset - the offsets stop being in index order,
+	// permanently, and the copy is perfectly valid.
+	void MakeRuntimeUpdatedGameState(q3::gameState_t& gs)
+	{
+		MakeGameState(gs);
+		AddConfigString(gs, 0, "\\mapname\\q3dm1\\g_gametype\\3\\sv_hostname\\test");
+	}
+
 	// The (unrealistic) fully packed pattern every older test assumed: all 1024 slots set and
 	// strictly increasing. The scanner must keep accepting this too - the fix was to legalise
 	// zero gaps, not to require them.
@@ -383,8 +394,17 @@ static void TestFindGameState()
 	bad.dataCount = q3::kMaxGamestateChars + 1;
 	CHECK_TRUE(!VmFind::GameStateLooksLive(&bad), "a dataCount past the pool is not live");
 	bad = gs;
-	bad.stringOffsets[0] = 5;
-	CHECK_TRUE(!VmFind::GameStateLooksLive(&bad), "stringOffsets[0] must be 1");
+	bad.stringOffsets[0] = bad.dataCount;
+	CHECK_TRUE(!VmFind::GameStateLooksLive(&bad), "a CS_SERVERINFO offset past the pool is not live");
+	bad = gs;
+	bad.stringOffsets[0] = 0;
+	CHECK_TRUE(!VmFind::GameStateLooksLive(&bad), "an unset CS_SERVERINFO is not live");
+	// ...but a CS_SERVERINFO that a runtime "cs" moved to the end of the pool still is. Requiring
+	// offset 1 here is what stopped the bridge from serving the configstrings, and stopped the scan
+	// from ever finding the copy again, the first time a server updated its serverinfo.
+	bad = gs;
+	bad.stringOffsets[0] = bad.dataCount - 1;
+	CHECK_TRUE(VmFind::GameStateLooksLive(&bad), "a runtime-updated CS_SERVERINFO is still live");
 	CHECK_TRUE(!VmFind::GameStateLooksLive(NULL), "NULL is not live");
 
 	// two SET slots sharing an offset: the packed order is broken
@@ -401,12 +421,22 @@ static void TestFindGameState()
 	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found),
 	           "a set offset past dataCount is rejected");
 
-	// a set slot out of order (appended strings must be ascending by index)
-	bad = gs;
-	bad.stringOffsets[q3::kCsSounds + 1] = bad.stringOffsets[q3::kCsModels + 0];
+	// ---- a LIVE copy: a runtime "cs" breaks index order and must still be recognised ------------
+	// CL_SetConfigstring() appends at the end of the pool whatever the index, so from the first
+	// configstring update on, a low index carries the highest offset. A check that demanded
+	// ascending offsets only ever recognised the few seconds right after CL_ParseGamestate() -
+	// which is why the scan could not find the copy and names waited on the next "cs" command.
+	static q3::gameState_t live;
+	MakeRuntimeUpdatedGameState(live);
+	CHECK_TRUE(live.stringOffsets[0] > live.stringOffsets[q3::kCsSounds + 1],
+	           "the runtime-updated serverinfo does carry the highest offset");
 	found = NULL;
-	CHECK_TRUE(!VmFind::FindGameState(&bad, sizeof(bad), &found),
-	           "a non-monotonic set offset is rejected");
+	CHECK_TRUE(VmFind::FindGameState(&live, sizeof(live), &found),
+	           "offsets out of index order are accepted (a level that has been running)");
+	CHECK_TRUE(VmFind::GameStateIsUsable(&live), "and the full shape check agrees");
+
+	// The distinctness check above is what still rejects the two "duplicate offsets" corruptions;
+	// order alone is no longer evidence of anything.
 
 	bad = gs;
 	MakeGameState(bad, true, false);                   // serverinfo without mapname
@@ -424,6 +454,50 @@ static void TestFindGameState()
 }
 
 // =============================================================================================== //
+// The rule that decides whether a pointer captured out of the cgame (its cgs.gameState) is still
+// the cgame's. Getting the "same instance" direction wrong is what cost every name for 10-60
+// seconds after a level load: CG_Init hands the address over, the level boundary drops it, and
+// nothing puts it back until the next "cs" server command re-fires the trap.
+// =============================================================================================== //
+static void TestSameVmInstance()
+{
+	Section("VmFind::SameVmInstance - does a captured pointer survive?");
+
+	const VmFind::Record byteCode = MakeBytecodeVm();
+	const uint32_t dataBase = byteCode.dataBase;
+
+	// same instance: a level change re-fills cgs.gameState in place, it does not move it
+	CHECK_TRUE(VmFind::SameVmInstance(byteCode, dataBase, 0),
+	           "bytecode: the same data segment keeps the pointer (a map change)");
+
+	// a new hunk segment: the pointer belongs to the previous instance
+	VmFind::Record reloaded = byteCode;
+	reloaded.dataBase = dataBase + (1u << kDataBits);
+	CHECK_TRUE(!VmFind::SameVmInstance(reloaded, dataBase, 0),
+	           "bytecode: a different data segment drops it");
+
+	// a zeroed record (VM_Free) is not the instance the pointer was captured from
+	VmFind::Record freed;
+	memset(&freed, 0, sizeof(freed));
+	CHECK_TRUE(!VmFind::SameVmInstance(freed, dataBase, 0), "a freed VM drops it");
+
+	// native DLL cgame: the module is the identity, and dataBase is 0 in both records because
+	// VM_Create() never touches it on the native path - so a DLL cgame reload has to be caught by
+	// the handle, not by the (uninformative) data segment.
+	const VmFind::Record nativeVm = MakeNativeVm();
+	CHECK_TRUE(VmFind::SameVmInstance(nativeVm, 0, nativeVm.dllHandle),
+	           "native: the same module keeps the pointer");
+	VmFind::Record otherDll = nativeVm;
+	otherDll.dllHandle = nativeVm.dllHandle + 0x100000u;
+	CHECK_TRUE(!VmFind::SameVmInstance(otherDll, 0, nativeVm.dllHandle),
+	           "native: a different module drops it");
+
+	// a pointer captured from a bytecode VM must not be believed once a DLL cgame is loaded
+	CHECK_TRUE(!VmFind::SameVmInstance(nativeVm, dataBase, 0),
+	           "a bytecode pointer against a native VM is dropped");
+}
+
+// =============================================================================================== //
 
 int main(void)
 {
@@ -436,6 +510,7 @@ int main(void)
 	TestVmRejection();
 	TestInterpretModes();
 	TestFindGameState();
+	TestSameVmInstance();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;
