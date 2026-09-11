@@ -486,6 +486,198 @@ static void TestFormatSpecifierName()
 
 // =============================================================================================== //
 
+// =============================================================================================== //
+// A tag that just became visible ramps its alpha in over kFadeInMs instead of popping into
+// existence. The clock is the frame's own server time, so the test drives it by re-gathering at
+// later frame times.
+// =============================================================================================== //
+static void TestTagFadesIn()
+{
+	Section("a tag fades in instead of popping");
+
+	CHECK_TRUE(BuildWorld(), "frame gathered");
+	Rec::CurrentDC() = NULL;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp = true;
+	NameEsp::ResetDrawState();        // a fresh level: no tag has faded in yet
+
+	NameEsp::Draw();
+	const Rec::Call* text = Rec::Last("glCallLists");
+	CHECK_TRUE(text != NULL, "the tag is drawn on the very first frame");
+	if (!text)
+		return;
+	CHECK_TRUE(text->alpha > 0.0f && text->alpha < 1.0f, "at a partial alpha, not at full brightness");
+
+	// ... and the overlay is actually blending, or an alpha would do nothing at all
+	CHECK_TRUE(Rec::Count("glBlendFunc") > 0, "the overlay installs a blend function");
+	const Rec::Call* blend = Rec::Last("glBlendFunc");
+	if (blend)
+	{
+		CHECK_INT((int)blend->a[0], 0x0302, "blend source is GL_SRC_ALPHA");
+		CHECK_INT((int)blend->a[1], 0x0303, "blend destination is GL_ONE_MINUS_SRC_ALPHA");
+	}
+	// the drop shadow fades with the text: it is the first of the two calls for this name
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	CHECK_TRUE(texts.size() >= 2, "shadow and text were both issued");
+	if (texts.size() >= 2)
+		CHECK_NEAR(texts[0]->alpha, text->alpha, 1e-6, "the shadow fades at the same alpha");
+
+	// Drive 30 further frames 16 ms apart (480 ms): the ramp climbs monotonically and reaches
+	// full opacity, which is also where it stops - a long-lived tag must stay opaque.
+	float previous = text->alpha;
+	bool monotonic = true;
+	bool reachedFull = false;
+	bool stayedFull = true;
+	for (int i = 1; i <= 30; ++i)
+	{
+		Rec::Reset(0, 0, kVpW, kVpH);
+		if (!NameEsp::Gather(1000 + i * 16, FakeEngine::Syscall()))
+		{
+			monotonic = false;
+			break;
+		}
+		NameEsp::Draw();
+		const Rec::Call* t = Rec::Last("glCallLists");
+		if (!t)
+		{
+			monotonic = false;
+			break;
+		}
+		if (t->alpha < previous - 1e-6f)
+			monotonic = false;
+		if (t->alpha >= 1.0f)
+			reachedFull = true;
+		else if (reachedFull)
+			stayedFull = false;
+		previous = t->alpha;
+	}
+	CHECK_TRUE(monotonic, "the alpha never drops while the player stays visible");
+	CHECK_TRUE(reachedFull, "and it reaches full opacity inside the ramp");
+	CHECK_TRUE(stayedFull, "and stays there");
+}
+
+// =============================================================================================== //
+// Once the tag has moved to the chest it stays there for a few frames after the head anchor comes
+// back on screen. Without that hold, aiming up and down across the boundary swaps the anchor every
+// other frame and the name hops between two points a head apart.
+// =============================================================================================== //
+namespace
+{
+	const float kHysteresisBotAt[3] = { 30.0f, 0.0f, 0.0f };
+
+	// raster position the tag would be at when anchored to `world`, for the current frame
+	bool AnchorAt(const float world[3], const char* name, float& outX, float& outY)
+	{
+		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+		NameEsp::ScreenPoint p;
+		if (!NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, world, p))
+			return false;
+		ExpectedCentreAt(p, name, outX, outY);
+		return true;
+	}
+
+	bool GatherHysteresisFrame(float pitch)
+	{
+		const float here[3] = { 0.0f, 0.0f, 0.0f };
+		const float none[3] = { 0.0f, 0.0f, 0.0f };
+		const float angles[3] = { pitch, 0.0f, 0.0f };
+
+		// A real snapshot carries each player once, so rebuild the entity list rather than
+		// appending another copy of the same client every frame.
+		FakeEngine::Reset();
+		FakeEngine::SetSnapshotTime(1000);
+		FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+		FakeEngine::SetPlayer(1, "\\n\\Close\\t\\0", kHysteresisBotAt);
+		return NameEsp::Gather(1000, FakeEngine::Syscall());
+	}
+
+	// Where the tag actually landed: the raster position of the first non-shadow text call.
+	bool DrawnAt(float& outX, float& outY)
+	{
+		const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+		for (size_t i = 0; i < texts.size(); ++i)
+		{
+			if (texts[i]->rgb == 0x000000u)
+				continue;                            // the drop shadow
+			const Rec::Call* pos = Rec::Prev(texts[i], "glRasterPos2f");
+			if (!pos)
+				return false;
+			outX = (float)pos->a[0];
+			outY = (float)pos->a[1];
+			return true;
+		}
+		return false;
+	}
+
+	bool CloserTo(float drawnX, float drawnY, float x, float y, float otherX, float otherY)
+	{
+		const float d  = fabs(drawnX - x) + fabs(drawnY - y);
+		const float od = fabs(drawnX - otherX) + fabs(drawnY - otherY);
+		return d < od;
+	}
+}
+
+static void TestChestAnchorHoldsItsGround()
+{
+	Section("the chest anchor is not given up after a single frame");
+
+	// A bot 30 units ahead: pitched down 20 degrees the anchor above the head leaves the top of the
+	// screen while the body is on it (the chest case); pitched level again it comes back. Both
+	// anchors are re-projected through the frame's own view each time, because the view is what
+	// changed between the frames.
+	Rec::CurrentDC() = NULL;
+	Config::g_Settings.nameEsp = true;
+	NameEsp::ResetDrawState();        // a fresh level: the tag has not settled on an anchor yet
+
+	// frame 1: pitched down, the head anchor is off screen -> the tag goes to the chest
+	CHECK_TRUE(GatherHysteresisFrame(20.0f), "pitched-down frame gathered");
+	const NameEsp::PlayerTag* tag = FindTag(1);
+	CHECK_TRUE(tag != NULL, "player 1 is in the frame");
+	if (!tag)
+		return;
+	const float chest[3] = { tag->origin[0], tag->origin[1],
+	                         tag->origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
+
+	float headX = 0.0f, headY = 0.0f, chestX = 0.0f, chestY = 0.0f;
+	CHECK_TRUE(AnchorAt(tag->origin, "Close", headX, headY), "the head anchor projects");
+	CHECK_TRUE(AnchorAt(chest, "Close", chestX, chestY), "the chest anchor projects");
+	CHECK_TRUE(fabs(chestY - headY) > 5.0, "the two anchors are far enough apart to tell apart");
+
+	Rec::Reset(0, 0, kVpW, kVpH);
+	NameEsp::Draw();
+	float drawnX = 0.0f, drawnY = 0.0f;
+	CHECK_TRUE(DrawnAt(drawnX, drawnY), "the tag was drawn on the pitched-down frame");
+	CHECK_TRUE(CloserTo(drawnX, drawnY, chestX, chestY, headX, headY), "it moved to the chest");
+
+	// frames 2 and 3: the view is level again, so the head anchor is back on screen - but the tag
+	// must hold the chest for a few frames before it goes back
+	for (int i = 0; i < 2; ++i)
+	{
+		CHECK_TRUE(GatherHysteresisFrame(0.0f), "level frame gathered");
+		tag = FindTag(1);
+		if (!tag)
+			return;
+		const float chestNow[3] = { tag->origin[0], tag->origin[1],
+		                            tag->origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
+		AnchorAt(tag->origin, "Close", headX, headY);
+		AnchorAt(chestNow, "Close", chestX, chestY);
+
+		Rec::Reset(0, 0, kVpW, kVpH);
+		NameEsp::Draw();
+		char what[96];
+		snprintf(what, sizeof(what), "frame %d still holds the chest anchor", i + 2);
+		CHECK_TRUE(DrawnAt(drawnX, drawnY), what);
+		CHECK_TRUE(CloserTo(drawnX, drawnY, chestX, chestY, headX, headY), what);
+	}
+
+	// frame 4: the hold has expired, so the tag goes back above the head
+	CHECK_TRUE(GatherHysteresisFrame(0.0f), "level frame gathered");
+	Rec::Reset(0, 0, kVpW, kVpH);
+	NameEsp::Draw();
+	CHECK_TRUE(DrawnAt(drawnX, drawnY), "the tag was drawn on the fourth frame");
+	CHECK_TRUE(CloserTo(drawnX, drawnY, headX, headY, chestX, chestY), "and it is back above the head");
+}
+
 int main(void)
 {
 	printf("kutaQ3 hook tests - NAME ESP drawing (nameEsp.cpp + glText.cpp + glDraw.cpp)\n");
@@ -494,6 +686,8 @@ int main(void)
 	TestOverlayState();
 	TestTagsDrawn();
 	TestChestAnchoredUpClose();
+	TestChestAnchorHoldsItsGround();
+	TestTagFadesIn();
 	TestDrawStats();
 	TestDrawsNothingWhenItShouldNot();
 	TestFormatSpecifierName();

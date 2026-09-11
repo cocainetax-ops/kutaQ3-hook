@@ -26,6 +26,91 @@ namespace
 	// every Draw() so a frame that draws nothing reports zeros.
 	NameEsp::DrawStats s_stats;
 
+	// ---- per-client draw state -----------------------------------------------------------------
+	// The tags themselves are rebuilt from scratch every frame; what has to survive across frames
+	// is how far a tag has faded in and which anchor it is currently using. Keyed by client
+	// number, fixed size (the ESP can never carry more than kMaxClients tags), no allocation.
+	const int kFadeInMs         = 220;   // a tag ramps 0 -> full over this
+	const int kHeadFramesToBack = 3;     // head anchor must hold this long before the tag returns
+	const int kMaxClockStepMs   = 250;   // a hitch is not a slow-motion ramp
+	const int kMinClockStepMs   = 16;    // ... and a stalled clock must not stall the ramp
+
+	struct TagState
+	{
+		int   clientNum;      // -1: slot free
+		float alpha;          // 0..1 fade-in
+		int   headHeld;       // frames in a row the above-the-head anchor has been on screen
+		bool  onChest;        // currently anchored to the chest instead
+		int   steppedAt;      // the Draw() that last advanced this slot (s_frameSerial)
+	};
+
+	TagState s_tags[q3::kMaxClients];
+	int      s_clock       = 0;
+	bool     s_haveClock   = false;
+	int      s_frameSerial = 0;   // one Draw() == one step, however many tags share a client number
+
+	void ResetTagState()
+	{
+		for (int i = 0; i < q3::kMaxClients; ++i)
+		{
+			s_tags[i].clientNum = -1;
+			s_tags[i].alpha     = 0.0f;
+			s_tags[i].headHeld  = 0;
+			s_tags[i].onChest   = false;
+			s_tags[i].steppedAt = 0;
+		}
+		s_clock     = 0;
+		s_haveClock = false;
+	}
+
+	// The slot for a client, reusing a free one when it has not been seen since the last reset.
+	// A client that drops out of the PVS and comes back keeps its slot, so a tag that blinks does
+	// not restart its fade - which is most of what the fade is for.
+	TagState& TagSlot(int clientNum)
+	{
+		int freeSlot = -1;
+		for (int i = 0; i < q3::kMaxClients; ++i)
+		{
+			if (s_tags[i].clientNum == clientNum)
+				return s_tags[i];
+			if (s_tags[i].clientNum < 0 && freeSlot < 0)
+				freeSlot = i;
+		}
+		// Every slot belongs to another client: with kMaxClients clients and kMaxClients slots
+		// that can only happen if the client list changed wholesale, so take slot 0 over the
+		// oldest entry (the tags are drawn in one pass, so a shared slot costs one fade).
+		if (freeSlot < 0)
+			freeSlot = 0;
+		s_tags[freeSlot].clientNum = clientNum;
+		s_tags[freeSlot].alpha     = 0.0f;
+		s_tags[freeSlot].headHeld  = 0;
+		s_tags[freeSlot].onChest   = false;
+		s_tags[freeSlot].steppedAt = 0;
+		return s_tags[freeSlot];
+	}
+
+	// Milliseconds since the previous Draw(), from the frame's own server time - the same clock
+	// the tags are positioned with. Clamped both ways: a long hitch must not ramp a tag in over
+	// the whole pause, and a clock that has stopped (demo pause, a frozen refdef) must not leave
+	// every tag invisible forever. A clock that runs BACKWARDS is a new level - the tags are all
+	// new players in a new map, so every fade restarts with it.
+	int ClockStepMs(int serverTime)
+	{
+		if (s_haveClock && serverTime < s_clock)
+		{
+			ResetTagState();
+			s_clock     = serverTime;
+			s_haveClock = true;
+			return kMinClockStepMs;
+		}
+		int step = s_haveClock ? (serverTime - s_clock) : 0;
+		s_clock     = serverTime;
+		s_haveClock = true;
+		if (step < kMinClockStepMs) step = kMinClockStepMs;
+		if (step > kMaxClockStepMs) step = kMaxClockStepMs;
+		return step;
+	}
+
 	// Off-screen tags are clamped to the viewport edge; dimming them says "this one is not where
 	// the tag is" without needing an arrow.
 	void Dim(unsigned char rgb[3])
@@ -41,13 +126,26 @@ const NameEsp::DrawStats& NameEsp::LastDrawStats()
 	return s_stats;
 }
 
+void NameEsp::ResetDrawState()
+{
+	ResetTagState();
+}
+
 void NameEsp::Draw()
 {
 	s_stats.drawn = s_stats.inView = s_stats.edge = s_stats.behind = 0;
 	if (!Config::g_Settings.nameEsp)
+	{
+		// off: forget every fade, so turning the feature back on ramps the tags in again instead
+		// of popping them in at full brightness
+		ResetTagState();
 		return;
+	}
 
 	const Frame& frame = Current();
+	// Note this deliberately does NOT clear the fade state when there is nobody to draw: the PVS
+	// drops every player for a frame or two at times, and restarting the fades there would blink
+	// the whole set. A player who is genuinely gone keeps a slot that costs nothing.
 	if (!frame.valid || frame.playerCount <= 0)
 		return;
 
@@ -69,11 +167,22 @@ void NameEsp::Draw()
 	if (!s_font.bBuilt)
 		return;
 
+	// One clock step for the whole frame: every tag fades in over the same interval.
+	const int stepMs = ClockStepMs(frame.serverTime);
+	++s_frameSerial;
+
 	{
 		// The overlay changes plenty of legacy state Quake 3 caches in its own glState shadow;
 		// the guard puts all of it back on the way out (same wrapper the menu renders in).
 		KUTAQ3_LEGACY_GL_STATE_GUARD();
 		GL::SetupOrtho();
+
+		// Blending is what makes the fade a fade: SetupOrtho() turns it off, the display-list font
+		// has no alpha of its own, and glBitmap fragments take the current raster colour - so
+		// SRC_ALPHA over the scene is the only thing that can soften a tag in. At alpha 1 the
+		// blend is a no-op, so a fully faded tag is pixel-identical to the old opaque draw.
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 		for (int i = 0; i < frame.playerCount; ++i)
 		{
@@ -92,29 +201,78 @@ void NameEsp::Draw()
 				p.x -= (float)vp.x;
 				p.y += (float)vp.y;
 			}
-			if (!headOk || !p.inView)
+			const bool headOnScreen = headOk && p.inView;
+
+			// The fallback anchor, mid-torso, projected every frame: the hysteresis below needs to
+			// know whether the chest is usable even while the head anchor is the one being drawn.
+			float chest[3] = { tag.origin[0], tag.origin[1],
+			                   tag.origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
+			ScreenPoint pc;
+			const bool chestOk = ProjectWorldToScreen(frame.view, vp, chest, pc);
+			if (chestOk)
 			{
-				// The anchor sits 36 units above the player's feet, and up close plus aiming
-				// up/down that point leaves the screen while the player is still plainly
-				// visible. Rather than clamping a visible player's name to the edge (dimmed,
-				// easily missed), re-anchor to the chest when the chest is on screen.
-				float chest[3] = { tag.origin[0], tag.origin[1],
-				                   tag.origin[2] - q3::kPlayerTagHeight + q3::kChestHeight };
-				ScreenPoint pc;
-				if (ProjectWorldToScreen(frame.view, vp, chest, pc) && pc.inView)
+				pc.x -= (float)vp.x;
+				pc.y += (float)vp.y;
+			}
+			const bool chestOnScreen = chestOk && pc.inView;
+
+			TagState& st = TagSlot(tag.clientNum);
+			// One step per Draw(), not per tag: a frame is one unit of time for the ramp and the
+			// anchor hold however many tags in it name the same client.
+			const bool fresh = (st.steppedAt != s_frameSerial);
+			if (fresh)
+				st.steppedAt = s_frameSerial;
+
+			if (headOnScreen)
+			{
+				if (st.onChest)
 				{
-					pc.x -= (float)vp.x;
-					pc.y += (float)vp.y;
-					p = pc;                            // on the visible body, full brightness
+					// The anchor sits 36 units above the player's feet, so up close plus aiming
+					// up/down it leaves the screen while the player is still plainly visible -
+					// which is when the tag re-anchors to the chest. Moving back is held for a few
+					// frames: without that, aiming around the boundary swaps the anchor every
+					// other frame and the name hops between two points that are a head apart.
+					if (fresh)
+						++st.headHeld;
+					if (st.headHeld >= kHeadFramesToBack || !chestOnScreen)
+					{
+						st.onChest  = false;
+						st.headHeld = 0;
+					}
+					else
+					{
+						p = pc;
+					}
 				}
-				else if (!headOk)
+			}
+			else
+			{
+				if (fresh)
+					st.headHeld = 0;
+				if (!headOk && !chestOnScreen)
 				{
 					++s_stats.behind;
 					continue;                          // behind the viewer
 				}
+				if (chestOnScreen)
+				{
+					st.onChest = true;
+					p = pc;                            // on the visible body, full brightness
+				}
 				// else: ahead of the viewer but off screen; keep the edge-clamped point
 				// (dimmed below).
 			}
+
+			// Fade in. A tag that just entered the PVS (or the level) ramps up over kFadeInMs
+			// instead of popping into existence; a client that drops out and back inside a few
+			// frames keeps its alpha, so the PVS flicker stops being a flicker.
+			if (fresh)
+			{
+				st.alpha += (float)stepMs / (float)kFadeInMs;
+				if (st.alpha > 1.0f)
+					st.alpha = 1.0f;
+			}
+			const float alpha = st.alpha;
 
 			unsigned char rgb[3];
 			TeamColor(tag.team, rgb);
@@ -153,8 +311,8 @@ void NameEsp::Draw()
 			// no alpha of its own), so readability comes from a 1px black drop shadow instead of a
 			// translucent backing plate. Note "%s": a player name may contain '%'.
 			static const unsigned char black[3] = { 0, 0, 0 };
-			s_font.Print(x + 1.0f, y + 1.0f, black, "%s", tag.name);
-			s_font.Print(x, y, rgb, "%s", tag.name);
+			s_font.PrintAlpha(x + 1.0f, y + 1.0f, black, alpha, "%s", tag.name);
+			s_font.PrintAlpha(x, y, rgb, alpha, "%s", tag.name);
 			++s_stats.drawn;
 			if (p.inView)
 				++s_stats.inView;

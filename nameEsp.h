@@ -166,6 +166,13 @@ namespace NameEsp
 	// the last gathered data is about a level that no longer exists.
 	void Reset();
 
+	// Drop the GL half's per-client state (the fade-in ramp and which anchor each tag is using).
+	// Called from vmHook.cpp's level-boundary drop, alongside Reset(): every client number now
+	// refers to a different player in a different map, so a ramp that was already finished must
+	// not carry over to them. Lives in nameEsp.cpp because it is GL-side state, and the portable
+	// half (nameEspCore.cpp) has no GL to talk to.
+	void ResetDrawState();
+
 	// Project a world position into the overlay's screen space. Returns false when there is no
 	// usable view / viewport or the point is behind the viewer.
 	bool ProjectWorldToScreen(const View& view, const Viewport& vp, const float world[3], ScreenPoint& out);

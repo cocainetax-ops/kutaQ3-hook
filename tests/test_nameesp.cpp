@@ -632,6 +632,141 @@ static void TestInterpolation()
 	          "a player with no previous sample is not interpolated");
 }
 
+// =============================================================================================== //
+// The previous sample is not always at newest-1, and the VM hook's bridge answers a number its
+// ring no longer holds with the NEWEST snapshot. Gather() has to find a genuinely older sample in
+// both cases, or those frames lose the interpolation and the tag steps instead of gliding.
+// =============================================================================================== //
+static void TestInterpolationLookback()
+{
+	Section("NameEsp::Gather - finding the sample it interpolates from");
+
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+	// ---- the exact previous number is gone: the cgame advanced by two server frames -------------
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(5000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Skipper", (const float[]){ 0.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(5000, FakeEngine::Syscall()), "lookback: first frame gathered");
+
+	FakeEngine::NewServerFrame(5050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Skipper", (const float[]){ 10.0f, 0.0f, 0.0f });
+	FakeEngine::SetPrevNumberGap(2);                 // newest-1 aged out of the ring
+
+	CHECK_TRUE(NameEsp::Gather(5025, FakeEngine::Syscall()), "lookback: skipped number gathered");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 1,
+	          "the sample two numbers back is still used to interpolate");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f,
+	           "and the tag is on the lerp midpoint, not snapped to the newest position");
+
+	// ---- the bridge serves the NEWEST snapshot for a number it does not hold --------------------
+	// Same request, different answer: a miss now reads as a successful read of a snapshot whose
+	// serverTime equals the newest one. Only the serverTime tells the two apart, so walking back
+	// has to keep going past it.
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(6000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Bridge", (const float[]){ 0.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(6000, FakeEngine::Syscall()), "bridge: first frame gathered");
+
+	// Three server frames, so the sample behind the newest is a real one: message 2 holds the
+	// runner at 5, message 3 (the newest) at 10.
+	FakeEngine::NewServerFrame(6025);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Bridge", (const float[]){ 5.0f, 0.0f, 0.0f });
+	FakeEngine::NewServerFrame(6050);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Bridge", (const float[]){ 10.0f, 0.0f, 0.0f });
+	FakeEngine::SetPrevNumberGap(2);                 // the older sample is two numbers back
+	FakeEngine::SetServeNewestOnMiss(true);          // everything else is answered with the newest
+
+	// 12/25 of the way from message 2 (x = 5) to message 3 (x = 10)
+	CHECK_TRUE(NameEsp::Gather(6037, FakeEngine::Syscall()), "bridge: gathered through the fallback");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 1,
+	          "the newest-on-miss answer is recognised as not the previous sample");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 7.4f, 0.01f,
+	           "and the older sample behind it is what the tag lerps from");
+
+	// ---- no older sample at all: the newest position, no lerp -----------------------------------
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(7000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Alone", (const float[]){ 4.0f, 0.0f, 0.0f });
+	FakeEngine::SetPrevNumberGap(9);                 // further back than the lookback reaches
+	FakeEngine::SetServeNewestOnMiss(true);
+	CHECK_TRUE(NameEsp::Gather(7000, FakeEngine::Syscall()), "no older sample: gathered");
+	CHECK_INT(NameEsp::Current().interpolatedPlayers, 0, "nothing to interpolate against");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 4.0f, 0.01f,
+	           "the newest position is used unlerped");
+}
+
+// =============================================================================================== //
+// Without a captured refdef there is no cg.time to interpolate at. Holding the fraction at 1 makes
+// the tag stop and jump a whole server frame at a time; carrying the lag measured on the last frame
+// that DID have a refdef keeps it moving like the model.
+// =============================================================================================== //
+static void TestRenderLagCarryOver()
+{
+	Section("NameEsp::Gather - the interpolation clock survives a missing refdef");
+
+	const float origin[3]   = { 0.0f, 0.0f, 0.0f };
+	const float velocity[3] = { 0.0f, 0.0f, 0.0f };
+	const float angles[3]   = { 0.0f, 0.0f, 0.0f };
+	const float viewOrigin[3] = { 0.0f, 0.0f, 26.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(8000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Glider", (const float[]){ 0.0f, 0.0f, 0.0f });
+
+	q3::refdef_t rd;
+	MakeRefdef(rd, viewOrigin, angles, 90.0f);
+	rd.time = 8000;
+	CHECK_TRUE(NameEsp::Gather(8000, FakeEngine::Syscall(), &rd), "lag: first frame gathered");
+
+	// one server frame later: the runner is at 10, and the frame renders 25 ms into that frame
+	FakeEngine::NewServerFrame(8050);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Glider", (const float[]){ 10.0f, 0.0f, 0.0f });
+
+	rd.time = 8025;
+	CHECK_TRUE(NameEsp::Gather(8025, FakeEngine::Syscall(), &rd), "lag: refdef frame gathered");
+	CHECK_TRUE(NameEsp::Current().usedRefdef, "refdef is the view");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f, "midpoint with the refdef");
+
+	// the next frame has no refdef, but the same serverTime: the lag measured above (8025 - 8000)
+	// puts the fraction back where it was instead of clamping it to 1.
+	CHECK_TRUE(NameEsp::Gather(8050, FakeEngine::Syscall(), NULL), "lag: frame without a refdef");
+	CHECK_TRUE(!NameEsp::Current().usedRefdef, "no refdef -> rebuilt view");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f,
+	           "the remembered lag keeps the fraction instead of clamping it to 1");
+
+	// ... and a second frame with neither a refdef nor a new snapshot holds there. The carried lag
+	// is an offset from the newest sample, not an extrapolation, so the tag sits where the model
+	// sits instead of running ahead of it.
+	CHECK_TRUE(NameEsp::Gather(8050, FakeEngine::Syscall(), NULL), "lag: another frame without one");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 5.0f, 0.01f,
+	           "no new snapshot -> the tag holds, it does not extrapolate");
+
+	// a level change resets the clock, so a lag measured against the old one must not be applied
+	NameEsp::Reset();
+	FakeEngine::Reset();
+	FakeEngine::SetSnapshotTime(9000);
+	FakeEngine::SetLocalPlayer(0, origin, velocity, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Fresh", (const float[]){ 3.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(9000, FakeEngine::Syscall(), NULL), "lag: reset frame gathered");
+	CHECK_NEAR(NameEsp::Current().players[0].origin[0], 3.0f, 0.01f,
+	           "Reset() drops the carried lag with the level");
+}
+
 static void TestReset()
 {
 	Section("NameEsp::Reset");
@@ -925,6 +1060,8 @@ int main(void)
 	TestFrozenView();
 	TestRefdefView();
 	TestInterpolation();
+	TestInterpolationLookback();
+	TestRenderLagCarryOver();
 	TestReset();
 	TestProjection();
 	TestTeamColors();

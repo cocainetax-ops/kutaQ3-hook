@@ -30,6 +30,12 @@ namespace GL
 		void Build(int height);
 		void Print(float x, float y, const unsigned char color[3], const char *format, ...);
 
+		// Print() with a coverage alpha, for text that fades in. The overlay enables blending and
+		// glBitmap fragments take the current raster colour, so an alpha here is a real fade
+		// rather than a brightness ramp toward black.
+		void PrintAlpha(float x, float y, const unsigned char color[3], float alpha,
+		                const char *format, ...);
+
 		// width in pixels of text rendered in this font - what centring a label needs.
 		// Returns 0 when the font is not built or the string is empty.
 		float TextWidth(const char *text);

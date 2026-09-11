@@ -23,12 +23,14 @@ namespace Rec
 		int          n;         // how many of a[] are meaningful
 		std::string  text;      // glCallLists payload, decoded through the current list base
 		unsigned int rgb;       // colour in effect when the call was made
+		float        alpha;     // ... and its alpha (glColor4f); 1 for glColor3*
 		unsigned int listBase;
 	};
 
 	struct State
 	{
 		unsigned int rgb;
+		float        alpha;
 		unsigned int listBase;
 		int viewport[4];
 	};
@@ -41,7 +43,7 @@ namespace Rec
 
 	inline State& StateRef()
 	{
-		static State s = { 0xffffffffu, 0u, { 0, 0, 0, 0 } };
+		static State s = { 0xffffffffu, 1.0f, 0u, { 0, 0, 0, 0 } };
 		return s;
 	}
 
@@ -57,6 +59,7 @@ namespace Rec
 	{
 		Calls().clear();
 		StateRef().rgb      = 0xffffffffu;
+		StateRef().alpha    = 1.0f;
 		StateRef().listBase = 0u;
 		StateRef().viewport[0] = viewportX;
 		StateRef().viewport[1] = viewportY;
@@ -70,6 +73,7 @@ namespace Rec
 		c.fn       = fn;
 		c.n        = n;
 		c.rgb      = StateRef().rgb;
+		c.alpha    = StateRef().alpha;
 		c.listBase = StateRef().listBase;
 		for (int i = 0; i < 4; ++i)
 			c.a[i] = (i < n) ? a[i] : 0.0;
