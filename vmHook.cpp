@@ -46,14 +46,45 @@ namespace
 
 	q3::refdef_t           s_refdef;
 	const q3::gameState_t* s_gameState      = NULL;   // cgs.gameState, inside the cgame's memory
-	// The VM instance s_gameState was read out of, and where it came from. The pointer is to a
-	// global inside the cgame, so it stays valid across level changes as long as the instance
-	// that owns it is still the live one (VmFind::SameVmInstance) - it is only stale when the
-	// engine loaded a different data segment or a different cgame module. s_gsFromScan feeds the
-	// status line: a trap capture is the cgame handing over its own address, a scan is a guess.
+
+	// Where that pointer came from. GS_TRAP is authoritative - the cgame handing over the address
+	// of its own cgs.gameState - and the two scans are guesses, ranked by how well they can be
+	// trusted afterwards:
+	//
+	//   - GS_ENGINE_SCAN finds the engine's OWN copy, clientActive_t::gameState in quake3.exe's
+	//     data. CL_ParseGamestate() fills it before the cgame VM is even created, and
+	//     CL_GetGameState() is nothing but `*gs = cl.gameState` (cl_cgame.c) - so its content is
+	//     byte-for-byte what the trap would have served, it just arrives without any trap. This is
+	//     what closes the fresh-join gap: the CG_INIT trap is always missed when the DLL was
+	//     loaded before connecting (see ScanEngineForGameState), and on stock 1.32 that trap only
+	//     re-fires when a configstring changes at runtime - on a quiet FFA server, the first score
+	//     event of the match. Which is, literally, your first death: the suicide or the bot's frag
+	//     updates CS_SCORES1/2, the server sends "cs", CG_ConfigStringModified() re-fetches the
+	//     whole gamestate through the trap, and THAT was the moment names came back. The engine
+	//     copy is available from CL_ParseGamestate() instead - no death required.
+	//   - GS_CGAME_SCAN finds cgs.gameState inside the cgame VM's own data segment (the old
+	//     fallback, kept for the native-cgame case where the trap also hands over a cgame
+	//     address).
+	//
+	// The trap capture upgrades either scan the moment it fires, and a scan never replaces a trap
+	// capture (Poll() only scans while the pointer is missing or plainly dead).
+	enum GsOrigin
+	{
+		GsTrap = 0,        // CG_GETGAMESTATE observed: the cgame handed over &cgs.gameState
+		GsEngineScan,      // shape scan of quake3.exe's data: the engine's cl.gameState
+		GsCgameScan        // shape scan of the cgame VM's segment: cgs.gameState
+	};
+
+	// The VM instance a TRAP or CGAME_SCAN pointer was read out of, recorded next to the pointer.
+	// The pointer is to a global inside the cgame, so it stays valid across level changes as long
+	// as the instance that owns it is still the live one (VmFind::SameVmInstance) - it is only
+	// stale when the engine loaded a different data segment or a different cgame module. An
+	// ENGINE_SCAN pointer belongs to quake3.exe itself, not to any cgame VM instance: the engine
+	// keeps cl.gameState across VM_Free / VM_Create, so the instance check must not judge it -
+	// only the shape checks below do. s_gsOrigin also feeds the status line.
 	uint32_t               s_gsDataBase     = 0;
 	uint32_t               s_gsDllHandle    = 0;
-	bool                   s_gsFromScan     = false;
+	GsOrigin               s_gsOrigin       = GsTrap;
 	DWORD                  s_gsStampMs      = 0;      // when the pointer was (re)acquired
 	DWORD                  s_lastShapeCheckMs = 0;    // last full shape re-check of that pointer
 	bool                   s_haveSnapshot   = false;
@@ -210,33 +241,39 @@ namespace
 	// -------------------------------------------------------------------------------------------
 	// the gameState pointer: one owner, one place that sets it
 	//
-	// Two sources: the CG_GETGAMESTATE trap (the cgame handing over the address of its own
-	// cgs.gameState - authoritative) and the scan below (a guess made when no trap has fired
-	// since the hook attached). Both go through here so the instance identity is always recorded
-	// next to the pointer, which is what lets a level change keep it instead of dropping it.
+	// Three sources, best first: the CG_GETGAMESTATE trap (the cgame handing over the address of
+	// its own cgs.gameState - authoritative), a shape scan of quake3.exe's data for the engine's
+	// own cl.gameState (the fresh-join fallback - the engine fills it before the cgame VM exists),
+	// and a shape scan of the cgame VM's data segment for cgs.gameState. All go through here so
+	// the origin is always recorded next to the pointer.
 	// -------------------------------------------------------------------------------------------
-	void SetGameState(const q3::gameState_t* gs, bool fromScan)
+	void SetGameState(const q3::gameState_t* gs, GsOrigin origin)
 	{
 		s_gameState   = gs;
-		s_gsFromScan  = fromScan;
+		s_gsOrigin    = origin;
 		s_gsStampMs   = timeGetTime();
-		s_gsDataBase  = s_vm ? s_vm->dataBase  : 0;
-		s_gsDllHandle = s_vm ? s_vm->dllHandle : 0;
+		// Only a pointer INTO the cgame carries VM identity: the instance check behind
+		// VmFind::SameVmInstance judges it against the dataBase / dllHandle it was taken under.
+		// The engine's own cl.gameState lives in quake3.exe and outlives every cgame VM, so its
+		// identity fields stay zero and unused.
+		const bool fromCgame = (origin != GsEngineScan);
+		s_gsDataBase  = (fromCgame && s_vm) ? s_vm->dataBase  : 0;
+		s_gsDllHandle = (fromCgame && s_vm) ? s_vm->dllHandle : 0;
 	}
 
 	void ClearGameState()
 	{
 		s_gameState   = NULL;
-		s_gsFromScan  = false;
+		s_gsOrigin    = GsTrap;
 		s_gsDataBase  = 0;
 		s_gsDllHandle = 0;
 	}
 
-	// The cgame keeps its own copy of the engine's gameState (cgs.gameState). The trap that hands
-	// the address over only fires in CG_Init, so when the DLL is injected into a map that is
-	// already running it is located by shape instead - see vmFind.h. A scan that finds nothing
-	// leaves whatever pointer was there alone: a guess is only replaced by a better guess.
-	bool ScanForGameState()
+	// The cgame keeps its own copy of the engine's gameState (cgs.gameState). Located by shape
+	// inside the cgame VM's own data segment (or a native cgame DLL's image) - the fallback of
+	// last resort. A scan that finds nothing leaves whatever pointer was there alone: a guess is
+	// only replaced by a better guess.
+	bool ScanCgameForGameState()
 	{
 		if (!s_vm)
 			return false;
@@ -260,13 +297,67 @@ namespace
 			const q3::gameState_t* gs = NULL;
 			if (VmFind::FindGameState(region, size, &gs))
 			{
-				SetGameState(gs, true);
+				SetGameState(gs, GsCgameScan);
 				found = true;
 				Log("[kutaQ3] cgame gameState at %p (found by scanning %u bytes)",
 				    (const void*)gs, (unsigned)size);
 			}
 		});
 		return found;
+	}
+
+	// The engine's own copy of the gameState: clientActive_t::gameState, a global in quake3.exe.
+	//
+	// This is the fallback that closes the fresh-join gap, and the reason is an ordering the hook
+	// can never beat with the trap alone. CL_InitCGame() runs VM_Create("cgame") and CG_Init()
+	// back to back, mid-frame, and CG_Init's FIRST gamestate trap is what the hook wants to see.
+	// The detour, though, is installed from the SwapBuffers poll - at the END of that frame or a
+	// later one - so a join from the main menu always misses it: there is no cgame VM record (and
+	// so no dispatcher address to detour) until VM_Create has finished, and CG_Init fires the trap
+	// microseconds after that. On stock 1.32 that trap then only re-fires when a configstring
+	// changes at runtime (CG_ConfigStringModified re-fetches the whole gamestate on every "cs"
+	// server command, cg_servercmds.c) - on a quiet FFA server, the first score event of the
+	// match: the local player's first death. Exactly the "names only show up after I die once"
+	// symptom.
+	//
+	// cl.gameState needs no trap at all. CL_ParseGamestate() fills it before CL_InitCGame() runs -
+	// before the cgame VM even exists - and CL_GetGameState() (cl_cgame.c) is nothing but
+	// `*gs = cl.gameState`, the very thing the trap hands over. Its configstrings are therefore
+	// byte-identical to what the cgame's copy carries, they are FRESHER at a runtime "cs" (the
+	// engine integrates the new string first), and the copy is found by the same shape scanner the
+	// cgame side uses - no offsets, just the gameState's own invariants (see vmFind.h).
+	bool ScanEngineForGameState()
+	{
+		bool found = false;
+		if (s_codeLow >= s_codeHigh)
+			return false;
+
+		ForEachWritableRegion(s_codeLow, s_codeHigh, [&](const void* region, size_t size)
+		{
+			if (found)
+				return;
+			const q3::gameState_t* gs = NULL;
+			if (VmFind::FindGameState(region, size, &gs))
+			{
+				SetGameState(gs, GsEngineScan);
+				found = true;
+				Log("[kutaQ3] engine gameState (cl.gameState) at %p (found by scanning, %u bytes)",
+				    (const void*)gs, (unsigned)size);
+			}
+		});
+		return found;
+	}
+
+	// While no pointer is known: engine copy first (it exists before the cgame VM does and needs
+	// no trap), the cgame's own copy second. The first runtime "cs" re-fires CG_GETGAMESTATE and
+	// the trap capture upgrades either guess on its own.
+	bool ScanForGameState()
+	{
+		if (!s_vm)
+			return false;
+		if (ScanEngineForGameState())
+			return true;
+		return ScanCgameForGameState();
 	}
 
 	// -------------------------------------------------------------------------------------------
@@ -363,16 +454,24 @@ namespace
 		case q3::CG_GETGAMESTATE:
 		{
 			// CG_Init fetches the whole gamestate once - and CG_ConfigStringModified() fetches it
-			// again on EVERY "cs" server command (cg_servercmds.c), i.e. whenever any configstring
-			// changes. Either way the address is &cgs.gameState; the copy is read live rather than
-			// kept here so that configstring changes show up without a re-scan.
+			// again on EVERY "cs" server command (cg_servercmds.c: trap_GetGameState(&cgs.gameState)),
+			// i.e. whenever any configstring changes - a score, a join, a team change. Either way
+			// the address is &cgs.gameState; the copy is read live rather than kept here so that
+			// configstring changes show up without a re-scan.
 			//
 			// CG_Init calls this BEFORE trap_CM_LoadMap (cg_main.c: trap_GetGameState, then
 			// CG_ParseServerinfo, then trap_CM_LoadMap), so this is the first thing the hook sees
 			// of a new level - and the level boundary below must not throw it away.
+			//
+			// The one capture this case can miss is CG_Init's own, on a fresh join from the main
+			// menu: VM_Create + CG_Init run mid-frame, this detour is installed from the
+			// SwapBuffers poll at frame end, and on stock 1.32 nothing re-fires the trap until the
+			// first runtime "cs". ScanEngineForGameState() exists for exactly that window - it
+			// finds the same content in the engine's own cl.gameState, which CL_ParseGamestate()
+			// fills before the cgame VM is even created.
 			const uintptr_t dest = Resolve(args[1]);
 			if (dest)
-				SetGameState((const q3::gameState_t*)dest, false);
+				SetGameState((const q3::gameState_t*)dest, GsTrap);
 			break;
 		}
 
@@ -636,11 +735,14 @@ namespace
 
 		// Where the CS_PLAYERS configstrings came from, and how long the pointer has been held.
 		// "cgame trap" is the cgame handing over the address of its own cgs.gameState (CG_Init,
-		// then every "cs" command); "memory scan" means no trap has fired since the hook attached
-		// and the copy was located by shape instead. This is the line to read when names are
-		// missing after a map change: "not found yet" is a gathering failure, and a scan means the
-		// authoritative capture never arrived.
-		const char*    source = s_gsFromScan ? "memory scan" : "cgame trap";
+		// then every "cs" server command); "engine cl.gameState (scan)" is the engine's own copy,
+		// located by shape in quake3.exe - the fresh-join fallback; "cgame data (scan)" is the
+		// cgame's copy found by shape inside its VM segment. This is the line to read when names
+		// are missing: "not found yet" is a gathering failure, and a scan means the authoritative
+		// capture has not arrived (yet) - which on a fresh join is normal until the first "cs".
+		const char*    source = s_gsOrigin == GsTrap        ? "cgame trap"
+		                      : s_gsOrigin == GsEngineScan ? "engine cl.gameState (scan)"
+		                                                   : "cgame data (scan)";
 		const unsigned ageS   = (unsigned)((timeGetTime() - s_gsStampMs) / 1000u);
 
 		char kind[96];
@@ -723,8 +825,11 @@ bool Vm::Poll()
 		// A new VM instance means a new hunk segment (or a new cgame DLL): every pointer captured
 		// from the old one points somewhere else. Compared against the identity the pointer was
 		// TAKEN under, not against the last one seen: a level change inside one instance leaves
-		// both unchanged, and the pointer to the cgame's own global stays good across it.
-		if (s_gameState && !VmFind::SameVmInstance(*s_vm, s_gsDataBase, s_gsDllHandle))
+		// both unchanged, and the pointer to the cgame's own global stays good across it. The
+		// engine's own cl.gameState is excluded - it belongs to quake3.exe, not to a cgame VM
+		// instance, and outlives every one of them (only the shape checks below judge it).
+		if (s_gameState && s_gsOrigin != GsEngineScan &&
+		    !VmFind::SameVmInstance(*s_vm, s_gsDataBase, s_gsDllHandle))
 		{
 			Log("[kutaQ3] cgame VM instance changed - the configstrings pointer is stale");
 			ClearGameState();
@@ -754,7 +859,7 @@ bool Vm::Poll()
 			// matches gets one rescan attempt; when the scan has nothing better the old pointer is
 			// kept, because "names might be wrong" beats "no names until the next cs command".
 			s_lastShapeCheckMs = now;
-			if (s_gsFromScan && !VmFind::GameStateIsUsable(s_gameState))
+			if (s_gsOrigin != GsTrap && !VmFind::GameStateIsUsable(s_gameState))
 			{
 				Log("[kutaQ3] the scanned gameState copy no longer matches - rescanning");
 				ScanForGameState();

@@ -71,16 +71,19 @@ namespace
 	// A gameState_t is 1024 string offsets, a 16000 byte packed string pool and a used byte count.
 	// CL_ParseGamestate() appends each configstring the server enumerates (in ascending index
 	// order, SV_SendClientGameState loops i = 0..MAX_CONFIGSTRINGS), so right after a parse the
-	// offsets of the indices that were set are strictly increasing. CL_SetConfigstring() then
-	// appends AGAIN whenever one changes at runtime, which puts the newest string at the end of
-	// the pool no matter what its index is: from the first "cs" that updates a lower index than
-	// the highest one set (a warmup countdown, a team or model change, a mod's own configstring)
-	// onwards the offsets are NOT in index order any more. Every check below is therefore order
-	// independent, so the scan recognises a live copy at any moment instead of only in the first
-	// seconds after a gamestate parse:
+	// offsets of the indices that were set are strictly increasing. A runtime "cs" server command
+	// then updates one string, and the two engines do that differently:
+	//
+	//   - retail 1.32 (cl_cgame.c CL_ConfigstringModified) rebuilds the WHOLE pool in index order
+	//     with the changed string woven in - the offsets stay ascending forever;
+	//   - ioquake3 (CL_SetConfigstring) appends the new string at the END of the pool no matter
+	//     what its index is - from the first such update on, the offsets are NOT in index order.
+	//
+	// Every check below is therefore order independent, so the scan recognises a live copy at any
+	// moment under either engine instead of only in the first seconds after a gamestate parse:
 	//
 	//   - every set (nonzero) offset lands inside the pool, and no two set indices share one -
-	//     CL_SetConfigstring() always appends, so two offsets can never be equal;
+	//     neither engine ever produces two indices with one offset;
 	//   - every set string is terminated inside the pool and control-character free;
 	//   - CS_SERVERINFO carries \mapname\ and at least one CS_PLAYERS slot holds an infostring.
 	//
