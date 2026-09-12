@@ -201,11 +201,13 @@ The status line in the menu reports which one it found.
 
 The pointer to the cgame's `gameState_t` copy (`cgs.gameState`, read live for `CS_PLAYERS`) is
 captured from the `CG_GETGAMESTATE` trap. That trap fires in `CG_Init` and again whenever a `"cs"`
-server command changes a configstring (`CG_ConfigStringModified`). The trap is the *authoritative*
-source - it is the cgame handing over the address of its own global - and the memory scan described
-below is only the fallback for a late inject, when no trap has fired since the hook attached.
+server command changes a configstring - the retail cgame's `CG_ConfigStringModified()`
+(cg_servercmds.c) answers one by re-fetching the *whole* gamestate through
+`trap_GetGameState(&cgs.gameState)`. The trap is the *authoritative* source - it is the cgame
+handing over the address of its own global - and memory scans are only the fallback for when no
+trap has fired since the hook attached.
 
-Keeping it that way took three fixes; each one on its own still left a window where every name was
+Keeping it that way took four fixes; each one on its own still left a window where every name was
 skipped, and `Gather()` skips a player with no name rather than guessing one.
 
 1. **The level boundary used to throw the pointer away.** `CG_Init` calls `trap_GetGameState` and
@@ -221,23 +223,45 @@ skipped, and `Gather()` skips a player with no name rather than guessing one.
    one seen - a level change inside one instance changes neither `dataBase` nor `dllHandle`.
 2. **The liveness check asserted an invariant the engine breaks.** `GameStateLooksLive()` required
    `stringOffsets[CS_SERVERINFO] == 1`, true in a freshly parsed gamestate because the serverinfo is
-   the first string `CL_SetConfigstring()` appends. The same function appends at the *end* of the
-   pool for every runtime `"cs"`, so the first update of `CS_SERVERINFO` moves that offset to the
-   highest in the table - and from then on the bridge reported a perfectly good copy as dead, so
-   names stopped *and stayed stopped* until the next trap, and the scan could never find the copy
-   again either. The check is now "the used pool is inside the 16000-byte limit and `CS_SERVERINFO`
-   points into it", which holds for a live copy at any time.
-3. **The scan's shape check assumed the offsets stay in index order.** They do not, for the same
-   reason: from the first runtime configstring update on, a low index carries the highest offset.
-   The checks are now order independent - every set offset lands inside the pool, no two set indices
-   share one, every set string is terminated and control-character free, `CS_SERVERINFO` carries
-   `\mapname\`, and at least one `CS_PLAYERS` slot holds an infostring - so the fallback recognises
-   a live copy whenever it runs instead of only in the first seconds after a parse.
+   the first string appended. A runtime update moves that offset to the highest in the table - and
+   from then on the bridge reported a perfectly good copy as dead, so names stopped *and stayed
+   stopped* until the next trap, and the scan could never find the copy again either. The check is
+   now "the used pool is inside the 16000-byte limit and `CS_SERVERINFO` points into it", which
+   holds for a live copy at any time.
+3. **The scan's shape check assumed the offsets stay in index order.** They do not under every
+   engine: ioquake3 appends a runtime `"cs"` at the end of the pool whatever its index (retail 1.32
+   rebuilds the whole pool in index order instead, `CL_ConfigstringModified`). The checks are now
+   order independent - every set offset lands inside the pool, no two set indices share one, every
+   set string is terminated and control-character free, `CS_SERVERINFO` carries `\mapname\`, and at
+   least one `CS_PLAYERS` slot holds an infostring - so the fallback recognises a live copy whenever
+   it runs instead of only in the first seconds after a parse.
+4. **A fresh join always missed the one trap that mattered, and the first `cs` was your first
+   death.** `CL_InitCGame()` runs `VM_Create("cgame")` and `CG_Init()` back to back, mid-frame;
+   the dispatcher detour is installed from the SwapBuffers poll at frame end. There is no VM record
+   (and so no dispatcher address) until `VM_Create` finishes, and `CG_Init` fires its
+   `trap_GetGameState` microseconds after that - so joining from the main menu *always* misses the
+   capture. On stock 1.32 nothing re-fires that trap until the first runtime `"cs"`, and on a quiet
+   FFA server the first runtime configstring change is the first score event of the match: your own
+   first death (a suicide scores -1, the bot's frag +1, both update `CS_SCORES1` → the server sends
+   `cs 7 …`). That is the whole "names only show up after I kill myself" symptom - the death was
+   never the trigger, the configstring change it causes was.
+
+   The fix is a source that needs no trap at all: the engine's **own** copy,
+   `clientActive_t::gameState`, a global in quake3.exe. `CL_ParseGamestate()` fills it before
+   `CL_InitCGame()` runs - before the cgame VM even exists - and `CL_GetGameState()` (cl_cgame.c)
+   is nothing but `*gs = cl.gameState`, exactly what the trap hands over. A shape scan of
+   quake3.exe's data (`ScanEngineForGameState()` in vmHook.cpp) finds it with the same verifier the
+   other scans use, so a fresh join has configstrings within a poll tick, without waiting for any
+   `cs`. Precedence: the trap capture, then the engine copy, then the cgame VM's own copy; the
+   first runtime `"cs"` re-fires the trap and upgrades either scan on its own. An engine-copy
+   pointer is deliberately exempt from the VM-instance identity check - `cl.gameState` belongs to
+   quake3.exe and outlives every cgame VM; the shape checks are what keep it honest.
 
 The menu status line says which source the names are coming from (`configstrings: cgame trap, 12s
-old` / `memory scan` / `not found yet`). Read that first if names ever go missing: a `cgame trap`
-line with names missing is a gathering problem, a `memory scan` line means the authoritative capture
-never arrived, and `not found yet` means neither did.
+old` / `engine cl.gameState (scan)` / `cgame data (scan)` / `not found yet`). Read that first if
+names ever go missing: a `cgame trap` line with names missing is a gathering problem, a scan line
+means the authoritative capture has not arrived (yet - normal until the first runtime `"cs"`), and
+`not found yet` means neither has any copy.
 
 
 ### The view

@@ -49,15 +49,27 @@
 //                      playerState_t), so Gather() can read both the newest snapshot and the one
 //                      before it and lerp players the way the cgame renders them
 //   CG_GETGAMESTATE -> the address of the cgame's cgs.gameState, read live for the CS_PLAYERS
-//                      configstrings (found by scanning instead when the hook was installed after
-//                      the level loaded, see vmFind.h). Fires in CG_Init and again on every "cs"
-//                      server command, so the pointer is refreshed whenever the cgame re-fetches it.
+//                      configstrings. Fires in CG_Init and again on every "cs" server command
+//                      (the retail cgame's CG_ConfigStringModified re-fetches the whole
+//                      gamestate), so the pointer is refreshed whenever the cgame re-fetches it.
+//                      The CG_Init firing is uncatchable on a fresh join - VM_Create + CG_Init
+//                      run mid-frame, the detour attaches from the SwapBuffers poll at frame end
+//                      - so the configstrings have two trap-free fallbacks, both located by
+//                      shape with the vmFind.h verifier: the ENGINE's own copy
+//                      (clientActive_t::gameState in quake3.exe, filled by CL_ParseGamestate()
+//                      before the cgame VM even exists - CL_GetGameState() is just
+//                      `*gs = cl.gameState`), and the cgame's own copy inside its VM segment.
+//                      Until the first runtime "cs" re-fires the trap, those scans are what names
+//                      come from - without one, on a quiet FFA server the first "cs" is the first
+//                      score event of the match, i.e. the local player's first death, which is
+//                      exactly when names used to appear.
 //   CG_R_RENDERSCENE-> the refdef_t the cgame rendered this frame: the exact view origin, view
 //                      axis and fov, which is what NameEsp projects with
 //   CG_GETUSERCMD / CG_GETCURRENTCMDNUMBER / CG_CVAR_VARIABLESTRINGBUFFER ("cg_fov") -> the newest
 //                      usercmd and the fov cvar, so the fallback view (nameEsp.h) is what the cgame
 //                      itself used even when no refdef was captured
-//   CG_CM_LOADMAP   -> level boundary: everything captured so far is dropped
+//   CG_CM_LOADMAP   -> level boundary: the per-level captures are dropped (the configstrings
+//                      pointer is not - see DropLevelState() in vmHook.cpp)
 //
 // NameEsp::Gather() is handed a trampoline (Syscall()) that answers those same trap numbers out of
 // the copies above, so the portable half of the ESP is unchanged and still testable.

@@ -128,15 +128,39 @@ namespace
 		// server never set
 	}
 
-	// A live copy that has been running for a while: CL_SetConfigstring() answers a runtime "cs"
-	// server command by appending the new value at the END of the pool and pointing the index at
+	// A live copy that has been running for a while, updated the IOQUAKE3 way: their engine's
+	// configstring update appends the new value at the END of the pool and points the index at
 	// it, whatever that index is. Updating CS_SERVERINFO (index 0, as "cs 0 ..." does) therefore
-	// leaves the lowest index carrying the highest offset - the offsets stop being in index order,
-	// permanently, and the copy is perfectly valid.
+	// leaves the lowest index carrying the highest offset - the offsets stop being in index
+	// order, permanently, and the copy is perfectly valid. (Retail 1.32 does not do this - see
+	// RebuildGameStateLikeRetail1p32 below - but an order-independent scanner must accept both.)
 	void MakeRuntimeUpdatedGameState(q3::gameState_t& gs)
 	{
 		MakeGameState(gs);
 		AddConfigString(gs, 0, "\\mapname\\q3dm1\\g_gametype\\3\\sv_hostname\\test");
+	}
+
+	// Retail 1.32 updates the ENGINE's copy the way cl_cgame.c's CL_ConfigstringModified() does:
+	// the whole pool is rebuilt in INDEX order - memset, dataCount back to 1, then every
+	// configstring re-appended from index 0 upward, with the changed index taken from the "cs"
+	// command. The offsets stay strictly ascending forever, and the changed string lands in the
+	// middle of the pool. This is exactly what quake3.exe's cl.gameState looks like at the moment
+	// of the first score event of a match - on a quiet FFA server, the local player's first
+	// death: the server updates CS_SCORES1, sends "cs 7 <score>", and the engine rebuilds. The
+	// hook's engine-copy fallback scan has to recognise this shape.
+	void RebuildGameStateLikeRetail1p32(q3::gameState_t& gs, int index, const char* value)
+	{
+		q3::gameState_t old = gs;
+		memset(&gs, 0, sizeof(gs));
+		gs.dataCount = 1;
+		for (int i = 0; i < q3::kMaxConfigStrings; ++i)
+		{
+			const char* dup = (i == index) ? value
+			               : (const char*)(old.stringData + old.stringOffsets[i]);
+			if (!dup[0])
+				continue;                          // leave with the default empty string
+			AddConfigString(gs, i, dup);
+		}
 	}
 
 	// The (unrealistic) fully packed pattern every older test assumed: all 1024 slots set and
@@ -498,6 +522,69 @@ static void TestSameVmInstance()
 }
 
 // =============================================================================================== //
+// The engine's own cl.gameState - the copy the fresh-join fallback scan serves the configstrings
+// from, and what it looks like across the runtime "cs" updates that a match produces. The one
+// that matters is the first one: on a quiet FFA server the first score event of the match is the
+// local player's first death (the suicide or the bot's frag), the server updates CS_SCORES1 and
+// sends "cs 7 ...", and the engine rebuilds its pool. Before that, on a fresh join, the cgame
+// VM's CG_INIT trap is always missed (VM_Create + CG_Init run mid-frame; the SwapBuffers-polled
+// detour attaches at frame end) - which is exactly the "no names until my first death" bug.
+// =============================================================================================== //
+
+static void TestEngineGameStateOnRuntimeCs()
+{
+	Section("the engine's cl.gameState across a runtime \"cs\" (retail 1.32 rebuild)");
+
+	// CL_ParseGamestate() has filled it, exactly like any other gameState
+	static q3::gameState_t gs;
+	MakeGameState(gs);
+	RebuildGameStateLikeRetail1p32(gs, -1, NULL);   // no-op rebuild: same content, same shape
+	const q3::gameState_t* found = NULL;
+	CHECK_TRUE(VmFind::FindGameState(&gs, sizeof(gs), &found),
+	           "the engine copy as CL_ParseGamestate() leaves it is found");
+
+	// the first score event of the match: "cs 7 <score>" (CS_SCORES1) - the user's first death
+	RebuildGameStateLikeRetail1p32(gs, 7, "15");
+	CHECK_TRUE(gs.dataCount > 1, "the rebuilt pool is populated");
+	CHECK_TRUE(gs.stringOffsets[0] < gs.stringOffsets[7] || gs.stringOffsets[7] == 0,
+	           "a retail rebuild keeps the offsets in index order");
+	found = NULL;
+	CHECK_TRUE(VmFind::FindGameState(&gs, sizeof(gs), &found),
+	           "a retail-rebuilt copy (first frag of the match) is found");
+	CHECK_TRUE(VmFind::GameStateIsUsable(&gs), "and the full shape check agrees");
+
+	// the names survive the rebuild - this is what the ESP serves before the trap ever re-fires
+	char name[64] = { 0 };
+	CHECK_TRUE(q3::InfoValueForKey(q3::ConfigString(&gs, q3::kCsPlayers + 1), "n", name, sizeof(name)),
+	           "CS_PLAYERS+1 still carries a name after the rebuild");
+	CHECK_STR(name, "Bitterman", "and it is the one we wrote");
+
+	// CL_ConfigstringModified() has one early-out worth pinning: an UNCHANGED string is dropped
+	// before the rebuild ("cs" with the same value -> the pool stays byte-identical)
+	// - nothing to test in the scanner for that, but the score update repeated (every further
+	// frag of the match) keeps being recognised:
+	for (int score = 20; score < 23; ++score)
+	{
+		char value[16];
+		snprintf(value, sizeof(value), "%d", score);
+		RebuildGameStateLikeRetail1p32(gs, 7, value);
+	}
+	found = NULL;
+	CHECK_TRUE(VmFind::FindGameState(&gs, sizeof(gs), &found),
+	           "still found after a match's worth of score updates");
+
+	// an ioquake3-style engine appends instead of rebuilding - the lowest index then carries the
+	// highest offset. The scanner is order-independent and must keep accepting that shape too.
+	static q3::gameState_t appended;
+	MakeRuntimeUpdatedGameState(appended);
+	CHECK_TRUE(appended.stringOffsets[0] > appended.stringOffsets[q3::kCsSounds + 1],
+	           "the ioq3-style update puts the lowest index at the highest offset");
+	found = NULL;
+	CHECK_TRUE(VmFind::FindGameState(&appended, sizeof(appended), &found),
+	           "an ioquake3-style out-of-order pool is accepted too");
+}
+
+// =============================================================================================== //
 
 int main(void)
 {
@@ -510,6 +597,7 @@ int main(void)
 	TestVmRejection();
 	TestInterpretModes();
 	TestFindGameState();
+	TestEngineGameStateOnRuntimeCs();
 	TestSameVmInstance();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
