@@ -273,6 +273,9 @@ namespace
 	// inside the cgame VM's own data segment (or a native cgame DLL's image) - the fallback of
 	// last resort. A scan that finds nothing leaves whatever pointer was there alone: a guess is
 	// only replaced by a better guess.
+	// FIX: Try strict (requires players) first, then permissive (no players) for the fresh-join
+	// window where the initial gamestate may contain only serverinfo. The permissive copy is
+	// still the same global and will be updated in place when players appear.
 	bool ScanCgameForGameState()
 	{
 		if (!s_vm)
@@ -290,6 +293,7 @@ namespace
 			return false;
 		}
 
+		// strict first
 		ForEachWritableRegion(low, high, [&](const void* region, size_t size)
 		{
 			if (found)
@@ -300,6 +304,20 @@ namespace
 				SetGameState(gs, GsCgameScan);
 				found = true;
 				Log("[kutaQ3] cgame gameState at %p (found by scanning %u bytes)",
+				    (const void*)gs, (unsigned)size);
+			}
+		});
+		if (found) return true;
+		ForEachWritableRegion(low, high, [&](const void* region, size_t size)
+		{
+			if (found)
+				return;
+			const q3::gameState_t* gs = NULL;
+			if (VmFind::FindGameStateAllowEmpty(region, size, &gs))
+			{
+				SetGameState(gs, GsCgameScan);
+				found = true;
+				Log("[kutaQ3] cgame gameState at %p (found by permissive scan %u bytes - no players yet)",
 				    (const void*)gs, (unsigned)size);
 			}
 		});
@@ -345,12 +363,33 @@ namespace
 				    (const void*)gs, (unsigned)size);
 			}
 		});
+		if (found) return true;
+		// Permissive fallback: on a fresh join the initial cl.gameState may have no CS_PLAYERS yet
+		// (only serverinfo). Acquiring the pointer early - same global, updated in place - removes
+		// the "first kill" delay even when no players are present yet.
+		ForEachWritableRegion(s_codeLow, s_codeHigh, [&](const void* region, size_t size)
+		{
+			if (found)
+				return;
+			const q3::gameState_t* gs = NULL;
+			if (VmFind::FindGameStateAllowEmpty(region, size, &gs))
+			{
+				SetGameState(gs, GsEngineScan);
+				found = true;
+				Log("[kutaQ3] engine gameState (cl.gameState) at %p (permissive scan %u bytes - no players yet)",
+				    (const void*)gs, (unsigned)size);
+			}
+		});
 		return found;
 	}
 
 	// While no pointer is known: engine copy first (it exists before the cgame VM does and needs
 	// no trap), the cgame's own copy second. The first runtime "cs" re-fires CG_GETGAMESTATE and
 	// the trap capture upgrades either guess on its own.
+	// FIX: 4-tier search - engine strict, engine permissive, cgame strict, cgame permissive.
+	// This guarantees a fresh join gets a pointer even when the initial gamestate contains
+	// only serverinfo (no players yet), which is the common case on empty / FFA servers that
+	// previously required a kill to populate CS_PLAYERS.
 	bool ScanForGameState()
 	{
 		if (!s_vm)
@@ -800,7 +839,14 @@ bool Vm::Install()
 bool Vm::Poll()
 {
 	const DWORD now = timeGetTime();
-	if (now - s_lastPollMs < 500)
+	// FIX: Adaptive throttle - when the hook is still acquiring the cgame VM or its
+	// configstrings/snapshots (the fresh-join window) poll 5x faster. Once everything
+	// is live the 500 ms cadence resumes. This closes the gap where a 500 ms poll
+	// could otherwise miss the 50 ms window between CL_ParseGamestate and the first
+	// CG_GETSNAPSHOT trap on fast machines.
+	const bool needFast = (!s_vm || !s_gameState || !s_haveSnapshot);
+	const DWORD throttle = needFast ? 100 : 500;
+	if (now - s_lastPollMs < throttle)
 		return s_vm != NULL;
 	s_lastPollMs = now;
 
@@ -859,7 +905,12 @@ bool Vm::Poll()
 			// matches gets one rescan attempt; when the scan has nothing better the old pointer is
 			// kept, because "names might be wrong" beats "no names until the next cs command".
 			s_lastShapeCheckMs = now;
-			if (s_gsOrigin != GsTrap && !VmFind::GameStateIsUsable(s_gameState))
+			bool usable = false;
+			if (s_gsOrigin == GsEngineScan)
+				usable = VmFind::GameStateIsUsableAllowEmpty(s_gameState) || VmFind::GameStateIsUsable(s_gameState);
+			else
+				usable = VmFind::GameStateIsUsable(s_gameState);
+			if (s_gsOrigin != GsTrap && !usable)
 			{
 				Log("[kutaQ3] the scanned gameState copy no longer matches - rescanning");
 				ScanForGameState();
