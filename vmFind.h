@@ -130,11 +130,21 @@ namespace VmFind
 	// cgs.gameState). Returns false when nothing passes the shape checks.
 	bool FindGameState(const void* region, size_t size, const q3::gameState_t** out);
 
+	// Permissive variant: same as FindGameState but does NOT require a CS_PLAYERS entry.
+	// Used as fallback when the engine's cl.gameState is scanned on a fresh join with no
+	// other players yet (initial gamestate may contain only serverinfo). The pointer is still
+	// the same global and will be updated in place when players appear, so acquiring it early
+	// removes the \"names appear only after first kill\" window.
+	bool FindGameStateAllowEmpty(const void* region, size_t size, const q3::gameState_t** out);
+
 	// The full shape check FindGameState accepts a candidate with, exposed so a pointer that is
 	// already in hand can be re-validated later: a copy found by scanning could be the wrong
 	// thing, and a copy that stopped matching is stale. Costlier than GameStateLooksLive() (it
 	// walks every set configstring), so call it on a timer, not per frame.
 	bool GameStateIsUsable(const q3::gameState_t* gs);
+
+	// Permissive version of the shape check (no CS_PLAYERS required).
+	bool GameStateIsUsableAllowEmpty(const q3::gameState_t* gs);
 
 	// Cheap re-check for a gameState_t already in hand: is this still a live copy, or has the hunk
 	// moved on since the address was captured? Two int reads, safe to call every frame.

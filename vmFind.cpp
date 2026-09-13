@@ -93,7 +93,7 @@ namespace
 	// one of the 1024 offsets to be nonzero and increasing, which no shipped server ever produces,
 	// so the scan failed until a runtime "cs" command happened to re-fire CG_GETGAMESTATE.
 	// -------------------------------------------------------------------------------------------
-	bool LooksLikeGameState(const q3::gameState_t* gs)
+	bool LooksLikeGameStateEx(const q3::gameState_t* gs, bool requirePlayers)
 	{
 		// cheapest discriminator first - this alone rejects essentially every other address in the
 		// segment, which is what keeps the scan to a few milliseconds
@@ -128,11 +128,18 @@ namespace
 		}
 
 		// the pool starts with the serverinfo, and the clientinfo block has to hold at least one
-		// player: an empty gameState (loading screen, wrong structure) is not what we want
+		// player: an empty gameState (loading screen, wrong structure) is not what we want.
+		// For the permissive engine fallback we allow 0 players: on a fresh join the initial
+		// gamestate may contain only serverinfo before the local clientinfo is added via a
+		// runtime "cs", but the pointer itself is already the live global and will be updated
+		// in place - acquiring it early removes the "first kill" window.
 		if (!InfoStringLooksLive(q3::ConfigString(gs, kCsServerInfo), (size_t)count))
 			return false;
 		if (!HasKeyValue(q3::ConfigString(gs, kCsServerInfo), "mapname"))
 			return false;
+
+		if (!requirePlayers)
+			return true;
 
 		for (int i = 0; i < q3::kMaxClients; ++i)
 		{
@@ -142,6 +149,12 @@ namespace
 		}
 		return false;
 	}
+
+	bool LooksLikeGameState(const q3::gameState_t* gs)
+	{
+		return LooksLikeGameStateEx(gs, true);
+	}
+
 }
 
 // =============================================================================================== //
@@ -173,6 +186,11 @@ bool VmFind::GameStateLooksLive(const q3::gameState_t* gs)
 bool VmFind::GameStateIsUsable(const q3::gameState_t* gs)
 {
 	return LooksLikeGameState(gs);
+}
+
+bool VmFind::GameStateIsUsableAllowEmpty(const q3::gameState_t* gs)
+{
+	return LooksLikeGameStateEx(gs, false);
 }
 
 bool VmFind::SameVmInstance(const Record& rec, uint32_t capturedDataBase, uint32_t capturedDllHandle)
@@ -298,6 +316,27 @@ bool VmFind::FindGameState(const void* region, size_t size, const q3::gameState_
 	{
 		const q3::gameState_t* candidate = (const q3::gameState_t*)(base + offset);
 		if (LooksLikeGameState(candidate))
+		{
+			if (out)
+				*out = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool VmFind::FindGameStateAllowEmpty(const void* region, size_t size, const q3::gameState_t** out)
+{
+	if (out)
+		*out = NULL;
+	if (!region || size < sizeof(q3::gameState_t))
+		return false;
+
+	const char* base = (const char*)region;
+	for (size_t offset = 0; offset + sizeof(q3::gameState_t) <= size; offset += 4)
+	{
+		const q3::gameState_t* candidate = (const q3::gameState_t*)(base + offset);
+		if (LooksLikeGameStateEx(candidate, false))
 		{
 			if (out)
 				*out = candidate;
