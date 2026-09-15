@@ -281,6 +281,20 @@ namespace FakeEngine
 		AddEntity(q3::kEtPlayer, clientNum, origin, q3::kEfDead);
 	}
 
+	void SetPlayerEvent(int clientNum, int event, int eventParm)
+	{
+		for (int i = 0; i < s_entityCount; ++i)
+		{
+			if (s_snapshot.entities[i].clientNum == clientNum &&
+			    s_snapshot.entities[i].eType == q3::kEtPlayer)
+			{
+				s_snapshot.entities[i].event     = event;
+				s_snapshot.entities[i].eventParm = eventParm;
+				return;
+			}
+		}
+	}
+
 	void SetNonPlayerEntity(int number, const float origin[3])
 	{
 		AddEntity(2 /* ET_ITEM */, number, origin, 0);

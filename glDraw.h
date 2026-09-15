@@ -24,6 +24,8 @@ namespace GL
 	void RestoreGL();
 
 	void DrawFilledRect(float x, float y, float width, float height, const GLubyte color[3]);
+	void DrawFilledRectAlpha(float x, float y, float width, float height, const GLubyte color[3], float alpha);
 	void DrawOutline(float x, float y, float width, float height, float lineWidth, const GLubyte color[3]);
+	void DrawOutlineAlpha(float x, float y, float width, float height, float lineWidth, const GLubyte color[3], float alpha);
 }
 

@@ -36,6 +36,9 @@
     <ClCompile Include="nameEsp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="healthEsp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="glText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -87,6 +90,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="nameEsp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="healthEsp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="detver.h">

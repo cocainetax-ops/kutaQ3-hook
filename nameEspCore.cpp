@@ -22,6 +22,51 @@ namespace
 
 	NameEsp::Frame   s_frame;
 
+	// Last-known health per client. Stock 1.32 never puts other players' STAT_HEALTH in the
+	// snapshot (only the local playerState has it); EV_PAIN's eventParm is the remaining HP
+	// at the moment they took damage. Until the first pain event a newly seen player is
+	// assumed at 100. A teleport (respawn) resets to 100. Keyed by client number, dropped
+	// with the level via Reset().
+	int  s_clientHealth[q3::kMaxClients];
+	int  s_clientLastEvent[q3::kMaxClients];
+	bool s_clientSeen[q3::kMaxClients];
+
+	void ResetHealthHistory()
+	{
+		for (int i = 0; i < q3::kMaxClients; ++i)
+		{
+			s_clientHealth[i]    = q3::kDefaultMaxHealth;
+			s_clientLastEvent[i] = 0;
+			s_clientSeen[i]      = false;
+		}
+	}
+
+	int UpdateClientHealth(int clientNum, const q3::entityState_t& e, bool teleported)
+	{
+		if (clientNum < 0 || clientNum >= q3::kMaxClients)
+			return q3::kDefaultMaxHealth;
+
+		if (!s_clientSeen[clientNum])
+		{
+			s_clientHealth[clientNum]    = q3::kDefaultMaxHealth;
+			s_clientLastEvent[clientNum] = 0;
+			s_clientSeen[clientNum]      = true;
+		}
+		if (teleported)
+			s_clientHealth[clientNum] = q3::kDefaultMaxHealth;
+
+		const int ev = e.event & ~q3::kEvEventBits;
+		if (ev == q3::kEvPain && e.event != s_clientLastEvent[clientNum])
+		{
+			int hp = e.eventParm;
+			if (hp < 1)   hp = 1;
+			if (hp > 200) hp = 200;
+			s_clientHealth[clientNum]    = hp;
+			s_clientLastEvent[clientNum] = e.event;
+		}
+		return s_clientHealth[clientNum];
+	}
+
 	// ---- limits that keep a stale or bogus sample from throwing a tag across the map -------------
 	const int   kMaxSnapshotAgeMs = 250;    // beyond this a snapshot is treated as "where it says"
 	const float kMaxExtrapolatedStep = 200.0f;  // units; ~2x what a player covers in 250 ms
@@ -356,6 +401,7 @@ void NameEsp::Reset()
 	memset(&s_frame, 0, sizeof(s_frame));
 	memset(&s_snapshot, 0, sizeof(s_snapshot));
 	memset(&s_prevSnapshot, 0, sizeof(s_prevSnapshot));
+	ResetHealthHistory();
 	// the level is gone: the next snapshot's serverTime is a different clock, so the lag measured
 	// against the old one must not be applied to the first frames of the new one.
 	s_renderLag     = 0;
@@ -574,9 +620,22 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 		if (prev)
 			++s_frame.interpolatedPlayers;
 
+		tag.lerpOrigin[0] = anchor[0];
+		tag.lerpOrigin[1] = anchor[1];
+		tag.lerpOrigin[2] = anchor[2];
 		tag.origin[0] = anchor[0];
 		tag.origin[1] = anchor[1];
 		tag.origin[2] = anchor[2] + q3::kPlayerTagHeight;   // just above the 32 unit player bbox
+
+		const bool teleported = (prev != NULL) &&
+		                        (((prev->eFlags ^ e.eFlags) & q3::kEfTeleport) != 0);
+		tag.health = UpdateClientHealth(clientNum, e, teleported);
+
+		// Distance-based fade for HEALTH ESP: |cg.refdef.vieworg - cent->lerpOrigin|.
+		const float dx = s_frame.view.origin[0] - tag.lerpOrigin[0];
+		const float dy = s_frame.view.origin[1] - tag.lerpOrigin[1];
+		const float dz = s_frame.view.origin[2] - tag.lerpOrigin[2];
+		tag.distance = sqrtf(dx * dx + dy * dy + dz * dz);
 
 		++s_frame.playerCount;
 	}

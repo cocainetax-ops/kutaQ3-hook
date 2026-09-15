@@ -71,6 +71,16 @@ namespace q3
 	const int kEfDead                  = 0x00000001;   // bg_public.h:242
 	const int kEfTeleport              = 0x00000004;   // bg_public.h:246, toggled on every teleport
 
+	// entityState_t::event: two high bits cycle so an identical event started twice in a row
+	// is distinguishable. Mask them off with ~kEvEventBits to recover the entity_event_t
+	// (bg_public.h). EV_PAIN's eventParm is remaining HP - the only snapshot field that
+	// carries other players' health on stock 1.32.
+	const int kEvEventBit1             = 0x00000100;   // bg_public.h EV_EVENT_BIT1
+	const int kEvEventBit2             = 0x00000200;   // bg_public.h EV_EVENT_BIT2
+	const int kEvEventBits             = 0x00000300;   // EV_EVENT_BIT1 | EV_EVENT_BIT2
+	const int kEvPain                  = 56;           // entity_event_t EV_PAIN (after EV_BULLET)
+	const int kDefaultMaxHealth        = 100;          // standing HP until the first EV_PAIN
+
 	const int kDefaultViewHeight       = 26;      // bg_public.h:50 (standing eye height)
 
 	// pmtype_t + STAT_HEALTH - bg_public.h. The fallback view (nameEspCore.cpp BuildView) needs
@@ -94,6 +104,10 @@ namespace q3
 	// - aiming up/down at a nearby player - Draw() re-anchors the tag here rather than clamping
 	// a visible player's name to the edge; see the chest-anchor test in tests/test_gl.cpp.
 	const float kChestHeight              = 16.0f;
+
+	// Standing player bbox half-width (bg_pmove.c: pm->mins[0] = -15). HEALTH ESP uses this to
+	// keep the bar from exceeding the projected player model on screen.
+	const float kPlayerBboxHalfWidth      = 15.0f;
 
 	// ------------------------------------------------------------------------------------------
 	// angle packing - q_shared.h:1082

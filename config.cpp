@@ -20,6 +20,7 @@ void Config::ResetToDefaults(Settings& s)
 	s.chamsStyle             = 0;
 	s.neonEnabled            = false;
 	s.nameEsp                = true;
+	s.healthEsp              = true;
 	s.logShaders             = true;
 	s.hasLegacyMenuLayout    = false;
 	s.menuX                  = 60.0f;
@@ -178,6 +179,7 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 		if (EqualsNoCase(key, "LogShaders")) { ParseBool(value, s.logShaders); return; }
 		if (EqualsNoCase(key, "NeonEnabled")) { ParseBool(value, s.neonEnabled); return; }
 		if (EqualsNoCase(key, "NameEspEnabled")) { ParseBool(value, s.nameEsp); return; }
+		if (EqualsNoCase(key, "HealthEspEnabled")) { ParseBool(value, s.healthEsp); return; }
 	}
 
 	// legacy [Menu] from the first save/load revision - only used if kutaQ3_imgui.ini is missing
@@ -285,6 +287,7 @@ bool Config::Save()
 	file << "ChamsStyle=" << s.chamsStyle << "          ; 0 = solid, 1 = wireframe\n";
 	file << "NeonEnabled=" << (s.neonEnabled ? 1 : 0) << "        ; 1 = neon bloom chams override the style above\n";
 	file << "NameEspEnabled=" << (s.nameEsp ? 1 : 0) << "     ; 1 = player names on screen (reads the cgame VM directly)\n";
+	file << "HealthEspEnabled=" << (s.healthEsp ? 1 : 0) << "   ; 1 = green-to-red health bars above players\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
 	file.close();
 

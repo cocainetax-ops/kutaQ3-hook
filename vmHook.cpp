@@ -1,6 +1,7 @@
 #include "main.h"        // Log(), Detours, <Windows.h>
 #include "vmHook.h"
 #include "nameEsp.h"
+#include "healthEsp.h"
 
 #include <stdio.h>
 #include <string.h>

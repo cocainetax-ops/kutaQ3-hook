@@ -169,6 +169,7 @@
     <ClCompile Include="vmFind.cpp" />
     <ClCompile Include="nameEspCore.cpp" />
     <ClCompile Include="nameEsp.cpp" />
+    <ClCompile Include="healthEsp.cpp" />
     <ClCompile Include="glText.cpp" />
     <ClCompile Include="glDraw.cpp" />
     <ClCompile Include="glStateGuard.cpp" />
@@ -188,6 +189,7 @@
     <ClInclude Include="vmHook.h" />
     <ClInclude Include="vmFind.h" />
     <ClInclude Include="nameEsp.h" />
+    <ClInclude Include="healthEsp.h" />
     <ClInclude Include="detver.h" />
     <ClInclude Include="detours.h" />
     <ClInclude Include="glText.h" />

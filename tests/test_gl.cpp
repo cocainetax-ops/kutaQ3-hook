@@ -15,6 +15,7 @@
 // =============================================================================================== //
 
 #include "nameEsp.h"
+#include "healthEsp.h"
 #include "fake_engine.h"
 #include "config.h"
 #include "check.h"
@@ -678,6 +679,39 @@ static void TestChestAnchorHoldsItsGround()
 	CHECK_TRUE(CloserTo(drawnX, drawnY, headX, headY, chestX, chestY), "and it is back above the head");
 }
 
+static void TestHealthBarsDrawn()
+{
+	Section("HEALTH ESP drawing (green-to-red bars, stacked under names)");
+
+	CHECK_TRUE(BuildWorld(), "frame gathered");
+	Rec::CurrentDC() = NULL;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp   = false;
+	Config::g_Settings.healthEsp = true;
+	HealthEsp::ResetDrawState();
+	HealthEsp::Draw();
+
+	CHECK_TRUE(Rec::Count("glBegin") >= 2, "health bars issued filled quads");
+	CHECK_TRUE(Rec::Count("glColor4ub") >= 2, "bars use alpha colour");
+	CHECK_INT(Rec::Count("glCallLists"), 0, "health ESP does not print names");
+	const HealthEsp::DrawStats& st = HealthEsp::LastDrawStats();
+	CHECK_TRUE(st.drawn >= 2, "two players ahead of the viewer get bars");
+
+	// stacked under the name: both features on, bar y is below the name raster
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp   = true;
+	Config::g_Settings.healthEsp = true;
+	NameEsp::ResetDrawState();
+	NameEsp::Draw();
+	HealthEsp::Draw();
+	CHECK_TRUE(CountTextCalls("Bitterman") >= 1, "name still drawn when both ESPs are on");
+	CHECK_TRUE(HealthEsp::LastDrawStats().drawn >= 1, "bar still drawn when both ESPs are on");
+
+	Config::g_Settings.healthEsp = false;
+	HealthEsp::Draw();
+	CHECK_INT(HealthEsp::LastDrawStats().drawn, 0, "feature off -> no bars");
+}
+
 int main(void)
 {
 	printf("kutaQ3 hook tests - NAME ESP drawing (nameEsp.cpp + glText.cpp + glDraw.cpp)\n");
@@ -691,6 +725,7 @@ int main(void)
 	TestDrawStats();
 	TestDrawsNothingWhenItShouldNot();
 	TestFormatSpecifierName();
+	TestHealthBarsDrawn();
 
 	CHECK_SUMMARY("gl");
 	return g_failed ? 1 : 0;
