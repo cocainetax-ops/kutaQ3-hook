@@ -90,9 +90,14 @@ namespace NameEsp
 	struct PlayerTag
 	{
 		char  name[64];       // Q3 "^1" colour codes already stripped
-		float origin[3];
+		float origin[3];      // head anchor (lerpOrigin + kPlayerTagHeight)
+		float lerpOrigin[3];  // cent->lerpOrigin: the interpolated feet/origin the model sits on
 		int   clientNum;
 		int   team;           // Team
+		int   health;         // last known HP (100 until EV_PAIN; 1..200). Stock Q3 does not
+		                      // network other players' STAT_HEALTH - EV_PAIN's eventParm is
+		                      // the only snapshot field that carries it.
+		float distance;       // |cg.refdef.vieworg - lerpOrigin|, world units
 	};
 
 	// The view the tags are projected with (see the header comment for how it is rebuilt).

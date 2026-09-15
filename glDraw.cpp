@@ -50,6 +50,19 @@ void GL::DrawFilledRect(float x, float y, float width, float height, const GLuby
 	glEnd();
 }
 
+void GL::DrawFilledRectAlpha(float x, float y, float width, float height, const GLubyte color[3], float alpha)
+{
+	if (alpha < 0.0f) alpha = 0.0f;
+	if (alpha > 1.0f) alpha = 1.0f;
+	glColor4ub(color[0], color[1], color[2], (GLubyte)(alpha * 255.0f + 0.5f));
+	glBegin(GL_QUADS);
+	glVertex2f(x, y);
+	glVertex2f(x + width, y);
+	glVertex2f(x + width, y + height);
+	glVertex2f(x, y + height);
+	glEnd();
+}
+
 
 
 void GL::DrawOutline(float x, float y, float width, float height, float lineWidth, const GLubyte color[3])
@@ -57,6 +70,21 @@ void GL::DrawOutline(float x, float y, float width, float height, float lineWidt
 	glLineWidth(lineWidth);
 	glBegin(GL_LINE_STRIP);
 	glColor3ub(color[0], color[1], color[2]);
+	glVertex2f(x - 0.5f, y - 0.5f);
+	glVertex2f(x + width + 0.5f, y - 0.5f);
+	glVertex2f(x + width + 0.5f, y + height + 0.5f);
+	glVertex2f(x - 0.5f, y + height + 0.5f);
+	glVertex2f(x - 0.5f, y - 0.5f);
+	glEnd();
+}
+
+void GL::DrawOutlineAlpha(float x, float y, float width, float height, float lineWidth, const GLubyte color[3], float alpha)
+{
+	if (alpha < 0.0f) alpha = 0.0f;
+	if (alpha > 1.0f) alpha = 1.0f;
+	glLineWidth(lineWidth);
+	glBegin(GL_LINE_STRIP);
+	glColor4ub(color[0], color[1], color[2], (GLubyte)(alpha * 255.0f + 0.5f));
 	glVertex2f(x - 0.5f, y - 0.5f);
 	glVertex2f(x + width + 0.5f, y - 0.5f);
 	glVertex2f(x + width + 0.5f, y + height + 0.5f);

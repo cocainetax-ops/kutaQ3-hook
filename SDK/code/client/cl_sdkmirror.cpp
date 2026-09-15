@@ -188,6 +188,10 @@ CHECK_CONST(kPmSpectator, PM_SPECTATOR);
 CHECK_CONST(kPmIntermission, PM_INTERMISSION);
 CHECK_CONST(kPmSpIntermission, PM_SPINTERMISSION);
 CHECK_CONST(kStatHealth, STAT_HEALTH);
+CHECK_CONST(kEvEventBit1, EV_EVENT_BIT1);
+CHECK_CONST(kEvEventBit2, EV_EVENT_BIT2);
+CHECK_CONST(kEvEventBits, EV_EVENT_BITS);
+CHECK_CONST(kEvPain, EV_PAIN);
 
 /* the syscall numbers the VM hook watches, and the ones the ESP's bridge still answers */
 CHECK_CONST(CG_MILLISECONDS, CG_MILLISECONDS);

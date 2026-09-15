@@ -96,6 +96,13 @@ inline void glColor3ub(GLubyte r, GLubyte g, GLubyte b)
 	Rec::Push3("glColor3ub", r, g, b);
 }
 
+inline void glColor4ub(GLubyte r, GLubyte g, GLubyte b, GLubyte a)
+{
+	Rec::StateRef().rgb   = ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+	Rec::StateRef().alpha = (float)a / 255.0f;
+	Rec::Push4("glColor4ub", r, g, b, a);
+}
+
 inline void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
 	Rec::StateRef().rgb   = ((unsigned int)(r * 255.0f) << 16) |

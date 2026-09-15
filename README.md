@@ -92,6 +92,13 @@ display-list text renderer in `glText.h` / `glText.cpp`. Toggled with the **Name
 (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in `kutaQ3.cfg`); the colour is the
 team from the clientinfo, and a tag clamped to the screen edge is dimmed.
 
+**HEALTH ESP** (`healthEsp.h`) draws a green-to-red 2D bar at the same head anchor, using the
+player list `NameEsp::Gather()` already built. Stock 1.32 never networks other players'
+`STAT_HEALTH`; remaining HP is taken from `EV_PAIN`'s `eventParm` (default 100 until the first
+pain, reset on `EF_TELEPORT_BIT`). Bars scale down and fade out with
+`|cg.refdef.vieworg - cent->lerpOrigin|` (400..2500 units), stay no wider than the projected
+player bbox (`pm->mins[0] = -15`), and sit underneath the name when both features are on.
+
 It works on a stock install. No `vm_cgame`, no cgame DLL, no module to wait for.
 
 ### Why it does not hook a cgame module
@@ -365,6 +372,12 @@ the real 1.32b headers.
   dead players (corpses) are skipped, and tags for players outside the frustum are clamped to
   the screen edge and dimmed. Up close, where aiming up or down would push the above-the-head
   anchor off the screen while the player is still visible, the tag re-anchors to the chest.
+- **HEALTH ESP** (`healthEsp.h`) - a green-to-red 2D health bar above every other player,
+  through walls. Toggled independently with the **Health ESP (OpenGL)** tickbox in the VISUALS
+  tab (`HealthEspEnabled` in `kutaQ3.cfg`). Remaining HP comes from `EV_PAIN` (stock Q3 does
+  not put other players' `STAT_HEALTH` in the snapshot); until that event a player is drawn at
+  100. Bars are thinner and shorter than the projected player model, fade and shrink with
+  distance, and sit underneath the name when Name ESP is also on.
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
@@ -403,6 +416,7 @@ ChamsEnabled=1
 ChamsStyle=0          ; 0 = solid, 1 = wireframe
 NeonEnabled=0         ; 1 = neon bloom chams override the style above
 NameEspEnabled=1      ; 1 = player names on screen (reads the cgame VM directly)
+HealthEspEnabled=1    ; 1 = green-to-red health bars above players
 LogShaders=1
 ```
 
@@ -424,7 +438,7 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking, distance fade and bar layout, and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
 | `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
 | `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames and the chest anchor holding its ground. |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |

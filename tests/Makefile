@@ -34,7 +34,8 @@ BIN      := build
 
 CORE_SRCS := test_nameesp.cpp fake_engine.cpp $(ROOT)/nameEspCore.cpp
 GL_SRCS   := test_gl.cpp fake_engine.cpp stub_glStateGuard.cpp \
-             $(ROOT)/nameEsp.cpp $(ROOT)/nameEspCore.cpp $(ROOT)/glText.cpp $(ROOT)/glDraw.cpp
+             $(ROOT)/nameEsp.cpp $(ROOT)/nameEspCore.cpp $(ROOT)/healthEsp.cpp \
+             $(ROOT)/glText.cpp $(ROOT)/glDraw.cpp
 VM_SRCS   := test_vmfind.cpp $(ROOT)/vmFind.cpp
 
 .PHONY: all check clean

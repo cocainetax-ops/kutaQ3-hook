@@ -36,6 +36,7 @@
 // kutaQ3 hook - NAME ESP (see nameEsp.h). Player names drawn above every other player, through
 // walls, with the GL::Font text renderer. Gathered and drawn from the SwapBuffers hook.
 #include "nameEsp.h"
+#include "healthEsp.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -1267,6 +1268,33 @@ void RenderKutaQ3Menu()
 				}
 			}
 
+			ImGui::Spacing();
+
+			// HEALTH ESP (healthEsp.h): green-to-red 2D bars above the head. Same player list
+			// as NAME ESP. When both are on the bar sits underneath the name, thinner than
+			// the projected player model, and fades/scales with distance.
+			ImGui::Checkbox("Health ESP (OpenGL)", &cfg.healthEsp);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Floating health bars above every other player, through walls.\n"
+				                  "Green at 100 HP, red at empty. Scales down and fades out with\n"
+				                  "distance. When Name ESP is also on, the bar sits underneath\n"
+				                  "the name and stays thinner than the player model.");
+			if (cfg.healthEsp)
+			{
+				const NameEsp::Frame& hesp = NameEsp::Current();
+				if (hesp.valid && hesp.playerCount > 0)
+				{
+					const HealthEsp::DrawStats& st = HealthEsp::LastDrawStats();
+					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d health bar%s",
+					                   st.drawn, st.drawn == 1 ? "" : "s");
+					ImGui::TextDisabled("%d drawn, %d faded/off-screen", st.inView, st.skipped);
+				}
+				else if (hesp.valid)
+					ImGui::TextDisabled("no other players in snapshot");
+				else
+					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
+			}
+
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("EXTRAS"))
@@ -1441,12 +1469,13 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	// the tags, and before the OpenGL2 backend installs its own viewport. Gather() reads what the
 	// VM hook captured while the cgame ran this frame (vmHook.h / nameEsp.h); a no-op while the
 	// feature is off or no cgame VM is loaded.
-	if (Config::g_Settings.nameEsp)
+	if (Config::g_Settings.nameEsp || Config::g_Settings.healthEsp)
 		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
 	else if (NameEsp::Current().valid)
 		NameEsp::Reset();
 
 	NameEsp::Draw();
+	HealthEsp::Draw();
 
 	// Build + render the frame inside the legacy state guard.
 	//
