@@ -34,6 +34,9 @@ namespace Config
 		bool neonEnabled;     // "Neon" bloom chams (neonChams.h) - overrides the styles above while on
 		bool nameEsp;         // NAME ESP (nameEsp.h / vmHook.h) - player names through walls
 		bool healthEsp;       // HEALTH ESP (healthEsp.h) - green-to-red bars above players
+		int  healthEspSpawnHealth; // HEALTH ESP: HP an unmeasured player (no EV_PAIN since
+		                          // spawn/respawn) is drawn at. 1..200, 100 on stock servers;
+		                          // raise/lower for servers that scale spawn health.
 		bool logShaders;
 
 		// optional one-shot fallback if an older kutaQ3.cfg had a [Menu] section

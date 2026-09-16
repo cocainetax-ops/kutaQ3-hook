@@ -110,6 +110,12 @@ void HealthEsp::Draw()
 
 		static const unsigned char kBg[3]     = { 20, 20, 20 };
 		static const unsigned char kOutline[3] = { 0, 0, 0 };
+		// "Not measured yet" fill: neutral grey (deliberately outside the green-to-red
+		// confidence ramp) drawn as thin vertical strips, so an unconfirmed bar at the
+		// assumed spawn level reads as "estimate", never as "full health".
+		static const unsigned char kEstimated[3] = { 170, 170, 170 };
+		const float kHatchStrip = 2.0f;      // strip width, px
+		const float kHatchPitch = 6.0f;      // strip centre-to-centre, px
 
 		for (int i = 0; i < frame.playerCount; ++i)
 		{
@@ -181,8 +187,19 @@ void HealthEsp::Draw()
 			}
 
 			GL::DrawFilledRectAlpha(bar.x, bar.y, bar.w, bar.h, kBg, bar.alpha * 0.85f);
-			if (bar.fillW > 0.5f)
-				GL::DrawFilledRectAlpha(bar.x, bar.y, bar.fillW, bar.h, bar.fill, bar.alpha);
+			if (bar.confirmed)
+			{
+				// measured: the last EV_PAIN sample, solid green-to-red
+				if (bar.fillW > 0.5f)
+					GL::DrawFilledRectAlpha(bar.x, bar.y, bar.fillW, bar.h, bar.fill, bar.alpha);
+			}
+			else
+			{
+				// estimated: hatched fill up to the assumed spawn level
+				for (float sx = bar.x + 2.0f; sx + kHatchStrip <= bar.x + bar.fillW; sx += kHatchPitch)
+					GL::DrawFilledRectAlpha(sx, bar.y + 0.5f, kHatchStrip, bar.h - 1.0f,
+					                       kEstimated, bar.alpha * 0.8f);
+			}
 			GL::DrawOutlineAlpha(bar.x, bar.y, bar.w, bar.h, 1.0f, kOutline, bar.alpha);
 
 			++s_stats.drawn;

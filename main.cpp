@@ -1272,15 +1272,27 @@ void RenderKutaQ3Menu()
 
 			// HEALTH ESP (healthEsp.h): green-to-red 2D bars above the head. Same player list
 			// as NAME ESP. When both are on the bar sits underneath the name, thinner than
-			// the projected player model, and fades/scales with distance.
+			// the projected player model, and fades/scales with distance. The value is a
+			// damage-derived estimate (stock Q3 never sends other players' HP) - unmeasured
+			// players are drawn hatched at the assumed spawn level, measured ones solid.
 			ImGui::Checkbox("Health ESP (OpenGL)", &cfg.healthEsp);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Floating health bars above every other player, through walls.\n"
-				                  "Green at 100 HP, red at empty. Scales down and fades out with\n"
-				                  "distance. When Name ESP is also on, the bar sits underneath\n"
-				                  "the name and stays thinner than the player model.");
+			                      "Stock Q3 never sends other players' HP - the value is the last\n"
+			                      "damage sample (EV_PAIN). Solid green-to-red fill = measured;\n"
+			                      "neutral hatched fill = assumed spawn level, not hit since\n"
+			                      "spawn (heals such as health/regen packs and armor are not\n"
+			                      "modelled - the next hit re-measures). Scales down and fades\n"
+			                      "out with distance. When Name ESP is also on, the bar sits\n"
+			                      "underneath the name and stays thinner than the player model.");
 			if (cfg.healthEsp)
 			{
+				ImGui::IntSlider("Assumed spawn HP", &cfg.healthEspSpawnHealth, 1, 200);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("What an unmeasured player (no hit since spawn/respawn) is\n"
+			                          "drawn at, as a hatched bar. Stock Q3 spawns at 100; match a\n"
+			                          "server mod that scales spawn health (e.g. handicap spawn).\n"
+			                          "Measured players are unaffected.");
 				const NameEsp::Frame& hesp = NameEsp::Current();
 				if (hesp.valid && hesp.playerCount > 0)
 				{
@@ -1469,6 +1481,11 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	// the tags, and before the OpenGL2 backend installs its own viewport. Gather() reads what the
 	// VM hook captured while the cgame ran this frame (vmHook.h / nameEsp.h); a no-op while the
 	// feature is off or no cgame VM is loaded.
+	// The spawn-health assumption is a live config value (kutaQ3.cfg can be reloaded mid-session
+	// with "Load settings"), so push the current one into the portable half every frame, before
+	// Gather() - one int store, and it keeps the estimate honest without a second code path.
+	NameEsp::SetSpawnHealthAssumption(Config::g_Settings.healthEspSpawnHealth);
+
 	if (Config::g_Settings.nameEsp || Config::g_Settings.healthEsp)
 		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
 	else if (NameEsp::Current().valid)

@@ -1065,6 +1065,8 @@ static void TestHealthEsp()
 	CHECK_INT(NameEsp::Current().playerCount, 1, "one tag");
 	CHECK_INT(NameEsp::Current().players[0].health, q3::kDefaultMaxHealth,
 	          "unseen player assumed at 100 HP");
+	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
+	          "unseen player is an estimate, not a measurement");
 	CHECK_NEAR(NameEsp::Current().players[0].lerpOrigin[0], botAt[0], 0.01, "lerpOrigin x");
 	CHECK_NEAR(NameEsp::Current().players[0].origin[2], botAt[2] + q3::kPlayerTagHeight, 0.01,
 	           "head origin is lerpOrigin + tag height");
@@ -1081,6 +1083,8 @@ static void TestHealthEsp()
 	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 37);
 	CHECK_TRUE(NameEsp::Gather(1050, FakeEngine::Syscall()), "pain frame gathered");
 	CHECK_INT(NameEsp::Current().players[0].health, 37, "EV_PAIN eventParm is remaining HP");
+	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed,
+	          "the first pain confirms the estimate");
 
 	FakeEngine::NewServerFrame(1100);
 	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
@@ -1104,6 +1108,8 @@ static void TestHealthEsp()
 	CHECK_TRUE(NameEsp::Gather(1200, FakeEngine::Syscall()), "teleport frame gathered");
 	CHECK_INT(NameEsp::Current().players[0].health, q3::kDefaultMaxHealth,
 	          "EF_TELEPORT resets estimated HP to 100");
+	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
+	          "a respawn drops back to the estimate");
 
 	NameEsp::Reset();
 	FakeEngine::Reset();
@@ -1114,6 +1120,56 @@ static void TestHealthEsp()
 	CHECK_TRUE(NameEsp::Gather(2000, FakeEngine::Syscall()), "post-reset gathered");
 	CHECK_INT(NameEsp::Current().players[0].health, 5,
 	          "Reset() drops history so a new pain applies immediately");
+	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed,
+	          "post-reset pain confirms immediately");
+
+	// ---- the spawn-health assumption (Config HealthEspSpawnHealth) ------------------------------
+	// What an unmeasured player is drawn at. Live: an existing unmeasured player tracks it;
+	// a measurement (EV_PAIN) overrides it; a respawn falls back to the CURRENT value.
+	NameEsp::SetSpawnHealthAssumption(40);
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(2500);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
+	CHECK_TRUE(NameEsp::Gather(2500, FakeEngine::Syscall()), "assumption frame gathered");
+	CHECK_INT(NameEsp::Current().players[0].health, 40,
+	          "unmeasured player is drawn at the assumption, not 100");
+	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
+	          "the assumption is still an estimate");
+
+	NameEsp::SetSpawnHealthAssumption(60);
+	FakeEngine::NewServerFrame(2550);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
+	CHECK_TRUE(NameEsp::Gather(2550, FakeEngine::Syscall()), "live assumption frame gathered");
+	CHECK_INT(NameEsp::Current().players[0].health, 60,
+	          "an unmeasured player tracks a mid-session change of the assumption");
+
+	NameEsp::SetSpawnHealthAssumption(0);
+	CHECK_INT(NameEsp::SpawnHealthAssumption(), 1, "the assumption clamps to at least 1");
+	NameEsp::SetSpawnHealthAssumption(9999);
+	CHECK_INT(NameEsp::SpawnHealthAssumption(), 200, "the assumption clamps to at most 200");
+	NameEsp::SetSpawnHealthAssumption(40);
+
+	FakeEngine::NewServerFrame(2600);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
+	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 15);
+	CHECK_TRUE(NameEsp::Gather(2600, FakeEngine::Syscall()), "assumption pain frame gathered");
+	CHECK_INT(NameEsp::Current().players[0].health, 15,
+	          "a measurement overrides the assumption");
+	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed, "pain confirms");
+
+	FakeEngine::NewServerFrame(2650);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayerEx(1, "\\n\\Hurt\\t\\0", botAt, q3::kEfTeleport);
+	CHECK_TRUE(NameEsp::Gather(2650, FakeEngine::Syscall()), "assumption respawn gathered");
+	CHECK_INT(NameEsp::Current().players[0].health, 40,
+	          "a respawn falls back to the current assumption");
+	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
+	          "the respawn is an estimate again");
+	NameEsp::SetSpawnHealthAssumption(100);   // restore the stock default for the tests below
 
 	// colour / fade / ratio
 	CHECK_NEAR(HealthEsp::HealthRatio(100), 1.0f, 1e-6, "full at 100");
@@ -1167,6 +1223,8 @@ static void TestHealthEsp()
 		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p, true, stacked),
 		           "stacked bar");
 		CHECK_TRUE(solo.visible && stacked.visible, "both bars visible");
+		CHECK_TRUE(!solo.confirmed && !stacked.confirmed,
+		         "a never-hit tag computes an estimated (hatched) bar");
 		CHECK_TRUE(stacked.w < solo.w, "stacked bar is thinner than solo");
 		CHECK_TRUE(stacked.h < solo.h, "stacked bar is shorter than solo");
 		CHECK_NEAR(stacked.y, p.y + HealthEsp::kNameStackOffset, 0.02,
