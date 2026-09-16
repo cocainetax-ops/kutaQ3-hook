@@ -459,33 +459,48 @@ vs `built-in stock 1.32 names` and the weapon count.
 ### Icon textures - pak (ZIP) + TGA loading
 
 The icon shader name (`icons/iconw_gauntlet`) maps to a `.tga` in the game's pak files
-(`baseq3/pak0.pk3` or the mod's paks). `weaponEsp.cpp` (the Win32 half) opens those paks - they are
-plain ZIP archives - decodes the TGA and uploads it as a GL texture on the current context, self
-contained, no renderer-internal memory is touched.
+(`baseq3/pak0.pk3` or the mod's paks). `weaponEsp.cpp` (the Win32 half) finds and opens those pak
+files - it only touches the file system; the archive parsing, the inflater and the TGA decode are
+in `weaponEspCore.cpp`, and the texture goes onto the current GL context, self contained, no
+renderer-internal memory is touched.
 
 - **Finding the file**: every subdirectory of the game dir is a candidate mod dir; mod paks are
   tried first (they override `baseq3`, same load order the engine's `fs` uses), then `baseq3` paks
   highest number first (engine loads `pakN` ascending, so highest wins), then loose `.tga` files.
-  Exact name match wins, else first case-insensitive - like the engine's search.
+  Exact name match wins, else first case-insensitive - like the engine's search. `log.txt` gets one
+  line with the game dir it started from, the mod dir count and the pak count in `baseq3`, so a
+  "nothing found" report can be read against what the search actually had.
 
-- **ZIP parsing**: reads the end-of-central-directory at the tail, then the central directory
-  (rejected if >4 MiB), finds the entry, reads its local header and data. Handles stored (method 0)
-  and deflated (method 8). Deflate is inflated via `RtlDecompressBuffer` from `ntdll.dll`
-  (`CompressFormatNative` = zlib stream) - no import needed, no third-party zlib.
+- **ZIP parsing** (`WeaponEsp::PakReadEntry`): reads the end-of-central-directory at the tail (behind
+  an optional archive comment), then the central directory (rejected if >4 MiB), finds the entry,
+  reads its local header and data. Handles stored (method 0) and deflated (method 8). Deflate is
+  its own RFC 1951 inflater - stored / fixed-Huffman / dynamic-Huffman blocks, the full length and
+  distance tables, no allocation, nothing linked in. (It used to call `RtlDecompressBuffer`, which
+  only accepts LZNT1/XPRESS - its `COMPRESSION_FORMAT_NONE` path is not the ZIP stream at all, so
+  no deflated pak entry could ever be read. That and the header bug below are what made every stock
+  icon draw as a chip.)
 
-- **TGA decode**: accepts 8/16/24/32bpp, top-down or bottom-up. 32bpp Q3 TGA writers differ on
-  channel order - classic Q3 convention is ARGB, some mod tools write RGBA. Detected
-  statistically: on an icon most pixels are transparent, so which byte is 0 for the majority
-  decides. Output is always top-down RGBA for `glTexImage2D`.
+- **TGA decode** (`WeaponEsp::DecodeTga`): the header is read where the format puts it - pixel depth
+  at byte 16, descriptor at byte 17 (the code used to read those two bytes off by two, so an icon's
+  "depth" was the low byte of its height and most icons were rejected outright). Types 2 and 3
+  (uncompressed) and 10 (run-length encoded, like the engine), 8/16/24/32bpp, top-down or bottom-up.
+  The pixel bytes are read the way Q3's own art is written - 32bpp is B,G,R,A and 24bpp is B,G,R -
+  with no channel-order guessing. Output is always top-down RGBA for `glTexImage2D`.
 
-- **Upload & cache**: `glGenTextures` / `glTexImage2D` inside `KUTAQ3_LEGACY_GL_STATE_GUARD()`.
+- **Upload & cache**: `glGenTextures` / `glTexImage2D` inside `KUTAQ3_LEGACY_GL_STATE_GUARD()`, with
+  `GL_LINEAR` min/mag filters (a texture without a mipmap chain would otherwise be incomplete and
+  sample as black) and `GL_MODULATE` while drawing, so the icon's own alpha multiplies the fade.
   `IconTex` slots cache `icon` name, `tex` id, `w`/`h`, `valid`, `triedGen` (table generation last
-  loaded under). A failed lookup is remembered (`triedGen = s_tableGen`) so a missing file does not
-  cost a directory walk and pak open every frame. A new table or a new GL context (`wglGetCurrentDC`
-  change = `vid_restart`) earns a retry - the game destroys the context, not the ids, so every id
-  is stale and `valid` is cleared.
+  loaded under) and the `IconResult` behind a failure. A failed lookup is remembered
+  (`triedGen = s_tableGen`) so a missing file does not cost a directory walk and pak open every
+  frame - and the next frame still reports the same reason instead of re-probing. A new table or a
+  new GL context (`wglGetCurrentDC` change = `vid_restart`) earns a retry - the game destroys the
+  context, not the ids, so every id is stale and `valid` is cleared.
 
-A missing texture draws the neutral chip at the leg position and increments `iconsMissing`.
+A missing texture draws the neutral chip at the leg position, counts into `iconsMissing`, and the
+menu and `log.txt` say which of the three it was: not in the paks (`iconsNotInPak`), found but not a
+TGA this loader reads (`iconsBadData`), or decoded and refused by GL (`iconsNoUpload`) - plus
+`WeaponEsp::LastIconNote()`, one line naming the shader, the file and the reason.
 
 ### Distance-based scale & alpha fading, and the fade-in ramp
 
@@ -512,10 +527,12 @@ every frame; what survives is how far a tag has ramped up, keyed by client numbe
 so a hitch is not slow-motion and a stalled clock does not stall the ramp. PVS flicker keeps its
 alpha instead of blinking. Off-screen tags are dimmed 55% like the other ESPs.
 
-Split like the other ESPs: the table maths (scanning, name/icon resolution, anchor)
-lives in `weaponEspCore.cpp`, which needs no
-`<windows.h>` and no GL, so `tests/` can compile and run it against a fabricated cgame data segment.
-`weaponEsp.cpp` holds the GL / pak / texture / renderer half. The test build compiles `Draw()`
+Split like the other ESPs: the table maths (scanning, name/icon resolution, anchor) and the whole
+icon pipeline (the pak's ZIP index, the DEFLATE inflater, the TGA decode) live in
+`weaponEspCore.cpp`, which needs no
+`<windows.h>` and no GL, so `tests/` can compile and run it against a fabricated cgame data segment
+and against real archives and artwork. `weaponEsp.cpp` holds the file system search (finding the
+game dir, the mod dirs and the paks) and the GL texture half. The test build compiles `Draw()`
 against the stock table with no icons available, so the drawing path - projection, anchor, stacking,
 fade, stats - is exercised off Windows exactly like the other ESPs.
 
@@ -571,10 +588,12 @@ fade, stats - is exercised off Windows exactly like the other ESPs.
     nothing for `WP_NONE`.
 
   - **Icon** - the weapon's item icon: the cgame's own icon shader for that weapon (`icon`
-    field of `gitem_t`), loaded out of the game's pak files (plain ZIPs, stored + deflated via
-    `RtlDecompressBuffer`, TGA 8/16/24/32bpp ARGB/RGBA auto-detected) and drawn as a 36px quad
-    centred on the leg anchor, projected from the 3D anchor point. 1px black outline, neutral
-    chip fallback when the texture is not in the paks (`iconsMissing` counter).
+    field of `gitem_t`), loaded out of the game's pak files (plain ZIPs, stored + deflated through
+    the hook's own inflater, TGA types 2/3/10, 8/16/24/32bpp, engine byte order) and drawn as a
+    36px quad centred on the leg anchor, projected from the 3D anchor point. 1px black outline,
+    neutral chip fallback only when the texture really is not there - and the menu says which of
+    the three reasons it was (`iconsNotInPak` / `iconsBadData` / `iconsNoUpload`, plus
+    `LastIconNote()`).
 
   Scales down and fades out with `|vieworg - lerpOrigin|` like Distance/Health (font buckets
   `14,12,10,8,6,5` for Text, `36*scale` for Icon), fades in over
@@ -644,14 +663,14 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, WEAPON ESP's `bg_itemlist[]` shape scan (stock 52-byte and ioq3 72-byte layouts, entry-0 prefilter, pointer/string validation, weapon extraction with `pickup_name` fallback), `WeaponName` / `WeaponIcon` resolution, `LegAnchor` (mid-leg `kWeaponEspLegHeight`), and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, WEAPON ESP's `bg_itemlist[]` shape scan (stock 52-byte and ioq3 72-byte layouts, entry-0 prefilter, pointer/string validation, weapon extraction with `pickup_name` fallback), `WeaponName` / `WeaponIcon` resolution, `LegAnchor` (mid-leg `kWeaponEspLegHeight`), and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. Also WEAPON ESP's icon pipeline out of `weaponEspCore.cpp`: `DecodeTga` against generated TGAs (types 2/3/10, 8/16/24/32bpp, top-down and bottom-up, id field, truncation, the refusals - including the 64x64 icon whose height byte used to be read as its pixel depth) and `PakReadEntry` against hand-built pak archives with real zlib streams for all three DEFLATE block types. |
 | `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
 | `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `healthEsp.cpp` + `weaponEsp.cpp` + `weaponEspCore.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the three ESP overlays stacking in their own rows, the distance text's scale + fade with range, and WEAPON ESP's text at the leg anchor (orange, not team colour), icon chips when no texture exists, stacking below the head-anchored stack, and scale + fade with range. |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.
 
-Two things this host genuinely cannot check, so they are not quietly assumed to be fine:
+Three things this host genuinely cannot check, so they are not quietly assumed to be fine:
 
 - **The `vm_t` field offsets behind `vm_t::name`.** `struct vm_s` is full of pointers, so on an
   LP64 host the engine's copy is wider than the x86-only mirror and only the ABI-locked first two
@@ -659,6 +678,12 @@ Two things this host genuinely cannot check, so they are not quietly assumed to 
   against on any host). The full field-by-field comparison is inside `#if UINTPTR_MAX == 0xffffffff`
   in `cl_sdkmirror.cpp`, so an x86 build of the harness checks all of it. This sandbox has no 32-bit
   libc headers (`g++ -m32` cannot include `<stdint.h>`), so that block does not run here.
+- **WEAPON ESP's icon files inside the game's own paks.** The archive parsing, the inflater and
+  the TGA decode are unit-tested against real ZIP layouts and real zlib streams, and the file
+  search is the same `GetModuleFileNameA` / `FindFirstFileA` / `CreateFileA` walk the rest of the
+  hook uses - but whether the shipped `baseq3/pak0.pk3` (and whatever the user has installed on top
+  of it) actually yields the icon is the one thing that needs the game. That is what
+  `log.txt`'s one-line icon environment report and the menu's per-reason counters exist for.
 - **`vmHook.cpp` against a real `quake3.exe`.** The scanners and the trap decoding are unit-tested;
   that they match the shipped 1.32b binary is the one thing that needs the game.
 

@@ -40,10 +40,13 @@
 // Icon textures
 // -------------
 // The icon shader name (e.g. "icons/iconw_gauntlet") maps to a .tga in the game's pak files
-// (baseq3/pak0.pk3 or the mod's paks). weaponEsp.cpp opens those paks (they are plain ZIP
-// archives), decodes the TGA and uploads it as a GL texture on the current context - self
-// contained, no renderer-internal memory is touched. A missing icon is drawn as a neutral chip
-// so the position is still marked.
+// (baseq3/pak0.pk3 or the mod's paks). weaponEsp.cpp opens those paks and reads ranges out of
+// them; weaponEspCore.cpp parses the archive (they are plain ZIP archives, most entries
+// deflated - it carries its own inflater) and decodes the TGA, and the result is uploaded as a
+// GL texture on the current context - self contained, no renderer-internal memory is touched.
+// An icon that cannot be loaded is drawn as a neutral chip so the position is still marked, and
+// the reason (not in the paks / found but unreadable / GL refused it) is reported to the menu and
+// log.txt instead of being lumped together.
 //
 // Leg anchor and stacking
 // -----------------------
@@ -63,9 +66,11 @@
 // (DistanceEsp::DistanceFade: full inside kFadeStartDist, scale kMinScale / alpha 0 at
 // kFadeEndDist), so all the overlays agree about what "far" looks like.
 //
-// Split like the other ESPs: the table maths (scanning, name/icon resolution, the anchor) lives
-// in weaponEspCore.cpp, which needs no <windows.h> and no GL, so tests/ can compile and run it
-// against a fabricated cgame data segment. weaponEsp.cpp holds the GL / pak / texture half.
+// Split like the other ESPs: the table maths (scanning, name/icon resolution, the anchor) and now
+// the whole icon pipeline - pak parsing, inflate, TGA decode - live in weaponEspCore.cpp, which
+// needs no <windows.h> and no GL, so tests/ can compile and run it against a fabricated cgame data
+// segment, a fabricated pak and fabricated TGA/RLE artwork. weaponEsp.cpp holds only the GL half
+// plus the file system side of the icon search.
 // =============================================================================================== //
 
 #include "nameEsp.h"
@@ -144,15 +149,55 @@ namespace WeaponEsp
 	// The icon shader name Icon mode loads for a weapon number, or "" when unlisted.
 	bool WeaponIcon(const WeaponTable& table, int weapon, char* out, size_t outSize);
 
+	// ============================================================================================ //
+	// the icon pipeline's portable half (weaponEspCore.cpp)
+	//
+	// Both of these are pure byte maths over buffers the caller owns, so the tests drive them with
+	// real pak layouts and real zlib streams instead of a Windows build. weaponEsp.cpp feeds them
+	// from the game's pak files.
+	// ============================================================================================ //
+
+	// A range read out of a pak: return false when the range cannot be read. weaponEsp.cpp passes
+	// SetFilePointer + ReadFile; a test passes a byte buffer.
+	typedef bool (*PakReadFn)(void* user, unsigned long long offset, void* dest, size_t count);
+
+	// Pull `entry` (e.g. "icons/iconw_gauntlet.tga") out of the pak `read` describes: find the
+	// central directory, look the name up (exact match first, then case-insensitive, like the
+	// engine's search), read the local header and the entry's data, and inflate it when the entry
+	// is deflated. On success *out is malloc'd and *outLen its size - the caller frees. On any
+	// failure *out is NULL, *outLen 0.
+	bool PakReadEntry(PakReadFn read, void* user, unsigned long long fileSize, const char* entry,
+	                  unsigned char** out, size_t* outLen);
+
+	// Decode a .tga into a malloc'd top-down RGBA buffer for glTexImage2D (the caller frees).
+	// Accepts what the engine's LoadTGA accepts - types 2, 3 and 10 (RLE), 8/16/24/32bpp, top-down
+	// or bottom-up, 512x512 at most - and reads the pixel channels the way the engine does (32bpp
+	// is B,G,R,A, 24bpp is B,G,R). false leaves *outRgba NULL.
+	bool DecodeTga(const unsigned char* data, size_t len, unsigned char** outRgba, int* outW,
+	               int* outH);
+
+	// What Icon mode got for a weapon - the reason behind a chip.
+	enum IconResult
+	{
+		IconOk = 0,     // a texture is ready to draw
+		IconNoName,     // the table has no icon shader for that weapon number
+		IconNotFound,   // the icon's .tga is in none of the game's paks / loose files
+		IconUnreadable, // the file was found but is not a TGA this loader can read
+		IconNoTexture   // the file decoded, but GL would not take the texture
+	};
+
 	// What Draw() did with the frame it was given (read by the menu).
 	struct DrawStats
 	{
-		int drawn;         // tags issued to GL (text: shadow + glyphs, icon: outline + quad)
-		int inView;        // ... projected unclamped
-		int edge;          // ... clamped to the viewport edge, dimmed
-		int behind;        // skipped as behind the viewer
-		int faded;         // skipped, faded to nothing by the distance fade
-		int iconsMissing;  // icon mode: the texture could not be loaded, a chip was drawn instead
+		int drawn;          // tags issued to GL (text: shadow + glyphs, icon: outline + quad)
+		int inView;         // ... projected unclamped
+		int edge;           // ... clamped to the viewport edge, dimmed
+		int behind;         // skipped as behind the viewer
+		int faded;          // skipped, faded to nothing by the distance fade
+		int iconsMissing;   // icon mode: chips drawn, for any reason (the three counters below)
+		int iconsNotInPak;  // ... the icon's .tga is in none of the paks / loose files
+		int iconsBadData;   // ... the file was found, the TGA decode failed
+		int iconsNoUpload;  // ... the file decoded, GL refused the texture
 	};
 
 	// The tag's world anchor: the player's interpolated feet/origin plus kWeaponEspLegHeight -
@@ -174,6 +219,11 @@ namespace WeaponEsp
 
 	// How many weapons the current table lists (the menu shows it next to the source).
 	int TableWeaponCount();
+
+	// One line describing the most recent icon that could not be loaded - which shader, where the
+	// search looked, why it failed - so the menu (and log.txt) says which of the three reasons
+	// above it actually was instead of blaming the paks for everything. "" while nothing failed.
+	const char* LastIconNote();
 
 	// Draw() - the GL half, in weaponEsp.cpp. Called from the hooked SwapBuffers every frame,
 	// after NameEsp::Draw() / DistanceEsp::Draw() / HealthEsp::Draw(); a no-op while the

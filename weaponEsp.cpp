@@ -9,11 +9,18 @@
 // the same ramp as the DISTANCE and HEALTH ESPs (DistanceEsp::DistanceFade).
 //
 // This file is the Win32 half, like nameEsp.cpp: the portable table maths (the bg_itemlist
-// shape scan, the stock fallback, the anchor) lives in weaponEspCore.cpp. Everything that
-// touches Windows (the cgame data segment walk, the pak / ZIP / TGA icon loading) is guarded
-// by _WIN32; the test build (tests/stub) compiles the same Draw() against a stock table with
-// no icons available, so the drawing path - projection, anchor, stacking, fade, stats - is
-// exercised off Windows exactly like the other ESPs.
+// shape scan, the stock fallback, the anchor) and the whole icon pipeline (the pak archive
+// parsing with its own DEFLATE inflater, the TGA decode) live in weaponEspCore.cpp, where the
+// tests run them against fabricated archives and artwork. What is guarded by _WIN32 here is the
+// part that needs Windows: the cgame data segment walk, the file system search for the icon
+// files (GetModuleFileNameA / FindFirstFileA / CreateFileA) and the GL texture upload. The test
+// build (tests/stub) compiles the same Draw() against a stock table with no icons available, so
+// the drawing path - projection, anchor, stacking, fade, stats - is exercised off Windows exactly
+// like the other ESPs.
+//
+// Icon failures carry their reason (WeaponEsp::IconResult): the menu and log.txt say whether the
+// file was not in the paks, was there but unreadable as a TGA, or was fine and GL refused it -
+// "not in the paks" for every one of them is what made a loader bug look like a missing asset.
 // =============================================================================================== //
 
 #include "weaponEsp.h"
@@ -83,8 +90,14 @@ namespace
 		int    triedGen;   // the table generation this slot was last loaded / checked under - a
 		                   // failed lookup is not repeated every frame (the file does not
 		                   // appear by itself); a new table or a new GL context earns a retry
+		int    result;     // the WeaponEsp::IconResult behind `triedGen`: why there is no texture,
+		                   // so a cached failure still reports what went wrong
 	};
 	IconTex s_icons[WeaponEsp::kTableWeapons];
+
+	// One line describing the last icon failure (WeaponEsp::LastIconNote()): which shader, where
+	// the search looked, what was wrong with what it found. Written by the Win32 half.
+	char s_iconNote[512];
 #if defined(_WIN32)
 	int s_tableGen = 0;  // bumped whenever the weapon table is (re)applied - the cgame changed.
 	                     // (the icon slots remember the generation they were last tried under,
@@ -275,17 +288,18 @@ namespace
 	}
 
 	// =========================================================================================== //
-	// pak (ZIP) + TGA icon loading
+	// the icon search, and the GL upload
 	//
 	// The icon shader name the table carries ("icons/iconw_gauntlet") is a path relative to the
-	// game directory; the cgame registered the same path as a shader, so the file it resolves
-	// to is exactly the artwork the mod uses. The paks (baseq3/pak0.pk3, the mod's paks) are
-	// plain ZIP archives - central directory first, then one read of the entry.
+	// game directory; the cgame registered the same path as a shader, so the file it resolves to is
+	// exactly the artwork the mod uses. This half only opens files and reads ranges out of them -
+	// the pak parsing (ZIP central directory, its own DEFLATE inflater) and the TGA decode live in
+	// weaponEspCore.cpp, where the tests drive them with real archives and real zlib streams.
+	//
+	// Every failure keeps its reason. "The file is not in the paks" and "the file is there but is
+	// not a TGA this loader reads" are different bugs, and log.txt now says which one happened
+	// instead of blaming the paks for both.
 	// =========================================================================================== //
-	uint16_t Rd16(const unsigned char* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
-	uint32_t Rd32(const unsigned char* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-	                                       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
-
 	struct PakFile
 	{
 		HANDLE hFile;
@@ -294,14 +308,10 @@ namespace
 
 	bool PakOpen(const char* path, PakFile& pak)
 	{
-		pak.hFile = INVALID_HANDLE_VALUE;
-		pak.open  = false;
 		pak.hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
 		                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (pak.hFile == INVALID_HANDLE_VALUE)
-			return false;
-		pak.open = true;
-		return true;
+		pak.open  = (pak.hFile != INVALID_HANDLE_VALUE);
+		return pak.open;
 	}
 
 	void PakClose(PakFile& pak)
@@ -311,325 +321,30 @@ namespace
 		pak.open = false;
 	}
 
-	bool PakSeek(PakFile& pak, DWORD offset)
+	// The range reader WeaponEsp::PakReadEntry pulls a pak through.
+	bool PakReadRange(void* user, unsigned long long offset, void* dest, size_t count)
 	{
-		return SetFilePointer(pak.hFile, offset, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER;
-	}
-
-	bool PakRead(PakFile& pak, void* dest, DWORD count)
-	{
+		PakFile& pak = *(PakFile*)user;
+		if (!pak.open)
+			return false;
+		LONG high = (LONG)(offset >> 32);
+		SetFilePointer(pak.hFile, (LONG)(offset & 0xFFFFFFFFu), &high, FILE_BEGIN);
 		DWORD got = 0;
-		const BOOL ok = ReadFile(pak.hFile, dest, count, &got, NULL);
-		return ok && got == count;
+		const BOOL ok = ReadFile(pak.hFile, dest, (DWORD)count, &got, NULL);
+		return ok && got == (DWORD)count;
 	}
 
-	// RtlDecompressBuffer from ntdll (no import needed): ZIP method 8 is a zlib stream, which
-	// is exactly what the NATIVE compress format expects.
-	bool InflateDeflate(const unsigned char* src, size_t srcLen, unsigned char* dest, size_t destLen)
-	{
-		typedef NTSTATUS (WINAPI *RtlDecompressBuffer_t)(int, PCHAR, ULONG, PCHAR, ULONG, PULONG);
-		static RtlDecompressBuffer_t decompress = 0;
-		if (!decompress)
-		{
-			HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-			if (!ntdll)
-				return false;
-			decompress = (RtlDecompressBuffer_t)GetProcAddress(ntdll, "RtlDecompressBuffer");
-		}
-		if (!decompress)
-			return false;
-
-		ULONG outSize = 0;
-		const NTSTATUS status = decompress(0 /* CompressFormatNative */, (PCHAR)dest, (ULONG)destLen,
-		                                   (PCHAR)src, (ULONG)srcLen, &outSize);
-		if (status != 0)
-			return false;
-		return outSize <= destLen;
-	}
-
-	// Find `entry` (e.g. "icons/iconw_gauntlet.tga") in the pak's central directory and read
-	// its bytes into *out (malloc'd; the caller frees). An exact name match wins, else the
-	// first case-insensitive one - like the engine's fs search.
-	bool PakFindEntry(PakFile& pak, const char* entry, unsigned char** out, size_t* outLen)
-	{
-		*out   = 0;
-		*outLen = 0;
-
-		LARGE_INTEGER sizeLi;
-		if (!GetFileSizeEx(pak.hFile, &sizeLi) || sizeLi.QuadPart < 22)
-			return false;
-		const uint64_t fileSize = (uint64_t)sizeLi.QuadPart;
-
-		// end of central directory: 22 bytes + a comment < 65536 bytes long, at the tail
-		const size_t tail = (size_t)(fileSize < (uint64_t)(65535 + 22)
-		                            ? fileSize : (uint64_t)(65535 + 22));
-		unsigned char tailBuf[65535 + 22];
-		if (!PakSeek(pak, (DWORD)(fileSize - tail)) || !PakRead(pak, tailBuf, (DWORD)tail))
-			return false;
-
-		const unsigned char* eocd = 0;
-		for (size_t off = tail - 22; off > 0; --off)
-		{
-			if (tailBuf[off] == 'P' && tailBuf[off + 1] == 'K' &&
-			    tailBuf[off + 2] == 0x05 && tailBuf[off + 3] == 0x06)
-			{
-				eocd = tailBuf + off;
-				break;
-			}
-		}
-		if (!eocd)
-			return false;
-
-		const uint16_t entryCount = Rd16(eocd + 10);
-		const uint32_t cdSize     = Rd32(eocd + 12);
-		const uint32_t cdOffset   = Rd32(eocd + 16);
-		if (entryCount == 0 || cdSize == 0)
-			return false;
-		if ((uint64_t)cdOffset + cdSize > fileSize)
-			return false;
-		if (cdSize > (4u * 1024u * 1024u))
-			return false;                      // no real pak's central directory is that big
-		unsigned char* cd = (unsigned char*)malloc(cdSize);
-		if (!cd)
-			return false;
-		const bool gotCd = PakSeek(pak, cdOffset) && PakRead(pak, cd, cdSize);
-		if (!gotCd)
-		{
-			free(cd);
-			return false;
-		}
-
-		const size_t wantLen = strlen(entry);
-		const unsigned char* bestRec  = 0;      // exact match
-		const unsigned char* bestCiRec = 0;     // first full case-insensitive match
-
-		const unsigned char* p = cd;
-		const unsigned char* cdEndPtr = cd + cdSize;
-		for (uint16_t i = 0; i < entryCount && p + 46 <= cdEndPtr; ++i)
-		{
-			if (p[0] != 'P' || p[1] != 'K' || p[2] != 0x01 || p[3] != 0x02)
-				break;
-			const uint16_t nameLen    = Rd16(p + 28);
-			const uint16_t extraLen   = Rd16(p + 30);
-			const uint16_t commentLen = Rd16(p + 32);
-			const unsigned char* name = p + 46;
-			if (name + nameLen > cdEndPtr)
-				break;
-
-			bool exact = (nameLen == (uint16_t)wantLen);
-			bool ci    = (nameLen == (uint16_t)wantLen);
-			for (uint16_t k = 0; exact && k < nameLen; ++k)
-				if (name[k] != entry[k])
-					exact = false;
-			for (uint16_t k = 0; ci && k < nameLen; ++k)
-			{
-				const char a = name[k];
-				const char b = entry[k];
-				const char la = (a >= 'A' && a <= 'Z') ? (char)(a + 32) : a;
-				const char lb = (b >= 'A' && b <= 'Z') ? (char)(b + 32) : b;
-				if (la != lb)
-					ci = false;
-			}
-			if (exact)
-			{
-				bestRec = p;
-				break;
-			}
-			if (ci && !bestCiRec)
-				bestCiRec = p;
-
-			p += 46 + nameLen + extraLen + commentLen;
-		}
-
-		const unsigned char* rec = bestRec ? bestRec : bestCiRec;
-		if (!rec)
-		{
-			free(cd);
-			return false;
-		}
-
-		const uint16_t method     = Rd16(rec + 10);
-		const uint32_t compSize   = Rd32(rec + 20);
-		const uint32_t uncompSize = Rd32(rec + 24);
-		const uint32_t localOff   = Rd32(rec + 42);
-		free(cd);
-		if (uncompSize == 0 || uncompSize > (16u * 1024u * 1024u) ||
-		    (uint64_t)localOff + 30 >= fileSize)
-			return false;
-
-		// the local header repeats the name/extra lengths - the data starts after them
-		unsigned char local[30];
-		if (!PakSeek(pak, localOff) || !PakRead(pak, local, 30) ||
-		    local[0] != 'P' || local[1] != 'K' || local[2] != 0x03 || local[3] != 0x04)
-			return false;
-		const DWORD dataOff = localOff + 30 + Rd16(local + 26) + Rd16(local + 28);
-		if ((uint64_t)dataOff + compSize > fileSize)
-			return false;
-
-		unsigned char* raw = (unsigned char*)malloc(compSize ? compSize : 1);
-		if (!raw)
-			return false;
-		if (!PakSeek(pak, dataOff) || !PakRead(pak, raw, compSize))
-		{
-			free(raw);
-			return false;
-		}
-
-		bool ok = false;
-		if (method == 0)
-		{
-			*out = raw;
-			*outLen = compSize;
-			ok = (compSize == uncompSize);
-		}
-		else if (method == 8)
-		{
-			unsigned char* inflated = (unsigned char*)malloc(uncompSize);
-			if (inflated && InflateDeflate(raw, compSize, inflated, uncompSize))
-			{
-				*out   = inflated;
-				*outLen = uncompSize;
-				ok = true;
-			}
-			else
-			{
-				free(inflated);
-			}
-		}
-		free(raw);
-		if (!ok)
-		{
-			free(*out);
-			*out   = 0;
-			*outLen = 0;
-		}
-		return ok;
-	}
-
-	// =========================================================================================== //
-	// TGA decode: the .tga artwork the cgame registered for the icon. Q3 icons are 32bpp (the
-	// classic ARGB byte order) or 24bpp, top-down or bottom-up; 8/16bpp are accepted too. The
-	// output is always a top-down RGBA buffer for glTexImage2D.
-	// =========================================================================================== //
-	bool DecodeTga(const unsigned char* d, size_t len, unsigned char** out, int* outW, int* outH)
-	{
-		*out = 0;
-		if (len < 18)
-			return false;
-
-		const int idLen    = d[0];
-		const int cmapType = d[1];
-		const int imgType  = d[2];
-		const int bpp      = d[14];
-		const int desc     = d[15];
-		if (cmapType != 0 || (imgType != 2 && imgType != 3) ||
-		    (bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32))
-			return false;
-
-		const int w = (int)(d[12] | (d[13] << 8));
-		const int h = (int)(d[14] | (d[15] << 8));
-		if (w < 1 || w > 512 || h < 1 || h > 512)
-			return false;
-		if ((size_t)(18 + idLen) + (size_t)w * h * (bpp / 8) > len)
-			return false;
-
-		const bool topDown = (desc & 0x20) != 0;
-		const unsigned char* px = d + 18 + idLen;
-
-		unsigned char* rgba = (unsigned char*)malloc((size_t)w * h * 4);
-		if (!rgba)
-			return false;
-
-		// 32bpp: Q3 TGA writers differ on the channel order - the classic Q3 convention is
-		// ARGB, some mod tools write RGBA. Detect it statistically: on an icon most pixels
-		// are transparent, so which byte is 0 for the majority decides.
-		int alphaFirst = 0, rgbaFirst = 0;
-		if (bpp == 32)
-		{
-			const int probe = w * h < 4096 ? w * h : 4096;
-			for (int i = 0; i < probe; ++i)
-			{
-				const unsigned char* s = px + i * 4;
-				if (s[0] == 0 && s[3] != 0) ++alphaFirst;
-				else if (s[3] == 0 && s[0] != 0) ++rgbaFirst;
-			}
-		}
-		const bool argb = (bpp == 32) && (alphaFirst > rgbaFirst);
-
-		for (int y = 0; y < h; ++y)
-		{
-			const int row = topDown ? y : (h - 1 - y);
-			const unsigned char* s = px + (size_t)y * w * (bpp / 8);
-			unsigned char* o = rgba + (size_t)row * w * 4;
-			for (int x = 0; x < w; ++x, ++o)
-			{
-				switch (bpp)
-				{
-				case 8:
-				{
-					const int v = s[x];
-					o[0] = o[1] = o[2] = (unsigned char)v;
-					o[3] = 255;
-					break;
-				}
-				case 16:
-				{
-					const uint16_t v = (uint16_t)(s[x * 2] | (s[x * 2 + 1] << 8));
-					o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31);
-					o[1] = (unsigned char)(((v >> 5) & 31) * 255 / 31);
-					o[2] = (unsigned char)((v & 31) * 255 / 31);
-					o[3] = 255;
-					break;
-				}
-				case 24:
-				{
-					o[0] = s[x * 3 + 2];   // stored BGR
-					o[1] = s[x * 3 + 1];
-					o[2] = s[x * 3];
-					o[3] = 255;
-					break;
-				}
-				case 32:
-				{
-					if (argb)
-					{
-						o[0] = s[x * 4 + 1];
-						o[1] = s[x * 4 + 2];
-						o[2] = s[x * 4 + 3];
-						o[3] = s[x * 4];
-					}
-					else
-					{
-						o[0] = s[x * 4];
-						o[1] = s[x * 4 + 1];
-						o[2] = s[x * 4 + 2];
-						o[3] = s[x * 4 + 3];
-					}
-					break;
-				}
-				}
-			}
-		}
-
-		*out  = rgba;
-		*outW = w;
-		*outH = h;
-		return true;
-	}
-
-	// =========================================================================================== //
-	// finding the icon file: the mod's paks first (they override baseq3, the same load order
-	// the engine's fs uses), then baseq3, then loose .tga files.
-	// =========================================================================================== //
-	bool LoadPakBytes(const char* dir, const char* file, unsigned char** out, size_t* outLen)
+	// One entry out of one pak (malloc'd on success, the caller frees).
+	bool LoadPakBytes(const char* path, const char* file, unsigned char** out, size_t* outLen)
 	{
 		PakFile pak;
-		char path[800];
-		if (snprintf(path, sizeof(path), "%s\\%s", dir, file) < 0)
-			return false;
 		if (!PakOpen(path, pak))
 			return false;
-		const bool ok = PakFindEntry(pak, file, out, outLen);
+		LARGE_INTEGER sizeLi;
+		bool ok = false;
+		if (GetFileSizeEx(pak.hFile, &sizeLi) && sizeLi.QuadPart > 0)
+			ok = WeaponEsp::PakReadEntry(PakReadRange, &pak, (unsigned long long)sizeLi.QuadPart,
+			                             file, out, outLen);
 		PakClose(pak);
 		return ok;
 	}
@@ -669,100 +384,168 @@ namespace
 		return ok;
 	}
 
-	// Load the .tga for an icon shader name ("icons/iconw_gauntlet") out of the game's paks or
-	// loose files. malloc'd on success; the caller frees.
-	bool LoadIconFile(const char* shaderName, unsigned char** out, size_t* outLen)
+	// The game directory: the folder quake3.exe sits in, where baseq3 and the mod dirs live.
+	const char* GameDir()
 	{
-		char file[160];
-		if (strrchr(shaderName, '.'))
-		{
-			// already a filename (a mod spells the icon with an extension)
-			if (snprintf(file, sizeof(file), "%s", shaderName) < 0)
-				return false;
-		}
-		else
-		{
-			if (snprintf(file, sizeof(file), "%s.tga", shaderName) < 0)
-				return false;
-		}
-
 		static char gameDir[520];
 		if (gameDir[0] == 0)
 		{
 			GetModuleFileNameA(NULL, gameDir, sizeof(gameDir) - 1);
 			for (char* p = gameDir; *p; ++p)
+			{
 				if (*p == '\\')
 				{
 					p[1] = 0;
 					break;
 				}
-		}
-
-		// every subdirectory of the game dir is a candidate mod dir; the engine loads them on
-		// top of baseq3, so they take precedence
-		struct ModDir
-		{
-			char path[560];
-		}
-		mods[32];
-		int modCount = 0;
-		{
-			char pattern[544];
-			snprintf(pattern, sizeof(pattern), "%s\\*", gameDir);
-			WIN32_FIND_DATAA fd;
-			HANDLE find = FindFirstFileA(pattern, &fd);
-			if (find != INVALID_HANDLE_VALUE)
-			{
-				do
-				{
-					if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.')
-						continue;
-					if (modCount < 32 && _stricmp(fd.cFileName, "baseq3") != 0)
-					{
-						if (snprintf(mods[modCount].path, sizeof(mods[modCount].path),
-						              "%s%s", gameDir, fd.cFileName) >= 0)
-							++modCount;
-					}
-				}
-				while (FindNextFileA(find, &fd) && modCount < 32);
-				FindClose(find);
 			}
 		}
+		return gameDir;
+	}
 
-		unsigned char* bytes = 0;
-		size_t len = 0;
+	// The directories the search walks, in the engine's own order: every subdirectory of the game
+	// dir first (a mod's paks are loaded on top of baseq3 and override it), then baseq3, then the
+	// game dir itself (loose .tga files next to quake3.exe). The game dir is the empty string, the
+	// marker the walk reads as "use the game dir".
+	const int kMaxIconRoots = 34;   // 32 mod dirs + baseq3 + the game dir itself
 
-		for (int m = 0; m < modCount; ++m)
+	int CollectRoots(char roots[][560], int& modCount)
+	{
+		const char* gameDir = GameDir();
+		int count = 0;
+		modCount  = 0;
+
+		char pattern[600];
+		snprintf(pattern, sizeof(pattern), "%s\\*", gameDir);
+		WIN32_FIND_DATAA fd;
+		HANDLE find = FindFirstFileA(pattern, &fd);
+		if (find != INVALID_HANDLE_VALUE)
 		{
-			if (LoadPakBytes(mods[m].path, file, &bytes, &len))
-				return true;
+			do
+			{
+				if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.')
+					continue;
+				if (_stricmp(fd.cFileName, "baseq3") == 0)
+					continue;
+				if (count >= kMaxIconRoots - 2)
+					break;
+				if (snprintf(roots[count], 560, "%s%s", gameDir, fd.cFileName) >= 0)
+					++count;
+			}
+			while (FindNextFileA(find, &fd) && count < kMaxIconRoots - 2);
+			FindClose(find);
+		}
+		modCount = count;
+
+		if (snprintf(roots[count], 560, "%sbaseq3", gameDir) >= 0)
+			++count;
+		roots[count][0] = 0;              // the game dir itself: loose files
+		++count;
+		return count;
+	}
+
+	// Written once, the first time an icon is looked for: what the search has to work with. A
+	// "0 icons in the paks" report is much easier to read next to this line - it says whether
+	// baseq3 was found at all, and how many paks were in it.
+	void LogIconEnvironment(int modCount)
+	{
+		static bool logged = false;
+		if (logged)
+			return;
+		logged = true;
+
+		const char* gameDir = GameDir();
+		char pattern[600];
+		snprintf(pattern, sizeof(pattern), "%sbaseq3\\*.pk3", gameDir);
+		int paks = 0;
+		WIN32_FIND_DATAA fd;
+		HANDLE find = FindFirstFileA(pattern, &fd);
+		if (find != INVALID_HANDLE_VALUE)
+		{
+			do
+			{
+				++paks;
+			}
+			while (FindNextFileA(find, &fd));
+			FindClose(find);
+		}
+		Log("[kutaQ3] weapon icons: game dir %s, %d mod dir(s), %d pak(s) in baseq3",
+		    gameDir, modCount, paks);
+	}
+
+	// "<dir><name>" into a fixed buffer - the same bounds the icon search's paths have. (snprintf
+	// would do, but the compiler then has to assume the 560-byte dir buffers could overflow the
+	// smaller path buffers it is joining them into.)
+	void JoinPath(char* out, size_t outSize, const char* dir, const char* name)
+	{
+		size_t n = 0;
+		for (size_t i = 0; dir && dir[i] && n + 1 < outSize; ++i)
+			out[n++] = dir[i];
+		for (size_t i = 0; name && name[i] && n + 1 < outSize; ++i)
+			out[n++] = name[i];
+		out[n] = 0;
+	}
+
+	// Where a lookup looked and what it found - the diagnostic behind a chip.
+	struct IconSearch
+	{
+		char foundIn[600];     // the pak or loose file the .tga came from, "" when nowhere
+		int  dirsLooked;       // mod dirs + baseq3 + the game dir
+		int  paksLooked;       // pak files opened
+	};
+
+	// Load the .tga for an icon shader name ("icons/iconw_gauntlet") out of the game's paks or
+	// loose files. malloc'd on success; the caller frees.
+	bool LoadIconFile(const char* shaderName, unsigned char** out, size_t* outLen, IconSearch& search)
+	{
+		search.foundIn[0] = 0;
+		search.dirsLooked = 0;
+		search.paksLooked = 0;
+		*out   = 0;
+		*outLen = 0;
+
+		char file[160];
+		if (strrchr(shaderName, '.'))
+		{
+			// already a filename (a mod spells the icon with an extension)
+			snprintf(file, sizeof(file), "%s", shaderName);
+		}
+		else
+		{
+			snprintf(file, sizeof(file), "%s.tga", shaderName);
 		}
 
-		// baseq3, then the game dir itself (loose files at the quake3.exe level)
-		const char* roots[2] = { "baseq3", "" };
-		for (int r = 0; r < 2; ++r)
-		{
-			char root[600];
-			snprintf(root, sizeof(root), "%s%s", gameDir, roots[r]);
+		char roots[kMaxIconRoots][560];
+		int modCount = 0;
+		const int rootCount = CollectRoots(roots, modCount);
+		LogIconEnvironment(modCount);
 
-			// paks inside the dir, highest number first: the engine loads pakN in ascending
-			// order, so the highest-numbered pak is the last one loaded and wins
+		for (int r = 0; r < rootCount; ++r)
+		{
+			const bool gameRoot = (roots[r][0] == 0);
+			const char* root = gameRoot ? GameDir() : roots[r];
+			++search.dirsLooked;
+
+			// paks inside the dir, highest number first: the engine loads pakN ascending, so the
+			// highest-numbered pak is the last one loaded and wins
 			char paks[16][800];
 			int pakCount = 0;
 			{
-				char pattern[640];
-				snprintf(pattern, sizeof(pattern), "%s\\*.pk3", root);
+				char pattern[720];
+				JoinPath(pattern, sizeof(pattern), root, "\\*.pk3");
 				WIN32_FIND_DATAA fd;
 				HANDLE find = FindFirstFileA(pattern, &fd);
 				if (find != INVALID_HANDLE_VALUE)
 				{
 					do
 					{
-						if (pakCount < 16)
+						if (pakCount >= 16)
+							break;
+						if (fd.cFileName[0])
 						{
-							if (snprintf(paks[pakCount], sizeof(paks[pakCount]), "%s\\%s",
-							            root, fd.cFileName) >= 0)
-								++pakCount;
+							JoinPath(paks[pakCount], sizeof(paks[pakCount]), root, "\\");
+							JoinPath(paks[pakCount], sizeof(paks[pakCount]), paks[pakCount], fd.cFileName);
+							++pakCount;
 						}
 					}
 					while (FindNextFileA(find, &fd) && pakCount < 16);
@@ -771,19 +554,33 @@ namespace
 			}
 			for (int p = pakCount - 1; p >= 0; --p)
 			{
-				if (LoadPakBytes(paks[p], file, &bytes, &len))
+				++search.paksLooked;
+				if (LoadPakBytes(paks[p], file, out, outLen))
+				{
+					CopyIconName(search.foundIn, sizeof(search.foundIn), paks[p]);
 					return true;
+				}
 			}
 
+			char loose[800];
+			JoinPath(loose, sizeof(loose), root, "\\");
+			JoinPath(loose, sizeof(loose), loose, file);
+			if (LoadLooseFile(loose, out, outLen))
 			{
-				char loose[800];
-				snprintf(loose, sizeof(loose), "%s\\%s", root, file);
-				if (LoadLooseFile(loose, &bytes, &len))
-					return true;
+				CopyIconName(search.foundIn, sizeof(search.foundIn), loose);
+				return true;
 			}
 		}
 
 		return false;
+	}
+
+	void SetIconNote(const char* icon, const char* reason, const char* detail)
+	{
+		if (detail && detail[0])
+			snprintf(s_iconNote, sizeof(s_iconNote), "%s: %s (%s)", icon, reason, detail);
+		else
+			snprintf(s_iconNote, sizeof(s_iconNote), "%s: %s", icon, reason);
 	}
 
 	// Upload the decoded icon as a GL texture on the current context.
@@ -800,11 +597,20 @@ namespace
 			if (tex)
 			{
 				glBindTexture(GL_TEXTURE_2D, tex);
+				// GL's default minification filter wants a mipmap chain, and a texture without one
+				// is incomplete: it samples as opaque black, so the icon would come out as a black
+				// square. Ask for a plain linear filter (the icons are drawn near 1:1 scaled).
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 			}
 		}
 		if (!tex)
+		{
+			slot.triedGen = s_tableGen;
+			slot.result   = WeaponEsp::IconNoTexture;
 			return false;
+		}
 
 		CopyIconName(slot.icon, sizeof(slot.icon), icon);
 		slot.tex      = tex;
@@ -812,18 +618,24 @@ namespace
 		slot.h        = h;
 		slot.valid    = true;
 		slot.triedGen = s_tableGen;
+		slot.result   = WeaponEsp::IconOk;
 		s_iconHdc     = wglGetCurrentDC();
 		return true;
 	}
 
 	// =========================================================================================== //
-	// EnsureIconTexture(weapon): the loaded texture for this weapon's icon, or false when the
-	// icon does not exist (the caller draws the chip). Loaded once per weapon per table per
-	// context - a failed lookup is remembered (triedGen) so a missing file does not cost a
-	// directory walk and a pak open every frame.
+	// EnsureIconTexture(weapon): the loaded texture for this weapon's icon, or the reason there is
+	// none (the caller draws the chip). Loaded once per weapon per table per GL context - a failure
+	// is remembered with its reason, so a missing file does not cost a directory walk and a pak
+	// open every frame, and the next frame still reports the same reason instead of re-probing.
+	// A new table (new cgame) or a new GL context (vid_restart) earns a retry.
 	// =========================================================================================== //
-	bool EnsureIconTexture(int weapon, IconTex& out)
+	WeaponEsp::IconResult EnsureIconTexture(int weapon, IconTex& out)
 	{
+		memset(&out, 0, sizeof(out));
+		if (weapon < 0 || weapon >= WeaponEsp::kTableWeapons)
+			return WeaponEsp::IconNoName;  // outside the table: there is no icon to look for
+
 		out = s_icons[weapon];
 		if (s_iconHdc && s_iconHdc != wglGetCurrentDC())
 		{
@@ -832,6 +644,7 @@ namespace
 			{
 				s_icons[i].valid    = false;
 				s_icons[i].triedGen = 0;
+				s_icons[i].result   = WeaponEsp::IconNotFound;
 			}
 			s_iconHdc = 0;
 			out.valid    = false;
@@ -840,43 +653,67 @@ namespace
 
 		char icon[64];
 		if (!WeaponEsp::WeaponIcon(s_table, weapon, icon, sizeof(icon)))
-			return false;
+		{
+			// the table has no icon shader for this weapon number: not a file problem
+			SetIconNote("the weapon table", "lists no icon shader for this weapon", 0);
+			return WeaponEsp::IconNoName;
+		}
 		if (out.valid && _stricmp(out.icon, icon) == 0)
-			return true;               // already loaded for this exact icon, this table, this context
+			return WeaponEsp::IconOk;      // already loaded for this exact icon, this table, this context
 		if (out.triedGen == s_tableGen)
-			return false;              // looked for it under this table already: it is not there
+			return (WeaponEsp::IconResult)out.result;   // looked for it already: same answer, no probing
 
 		unsigned char* tga = 0;
 		size_t len = 0;
-		if (!LoadIconFile(icon, &tga, &len))
+		IconSearch search;
+		if (!LoadIconFile(icon, &tga, &len, search))
 		{
+			char detail[160];
+			snprintf(detail, sizeof(detail), "%d dir(s), %d pak(s) searched, none holds it",
+			         search.dirsLooked, search.paksLooked);
+			SetIconNote(icon, "not in the game's paks", detail);
+			Log("[kutaQ3] weapon icon %s", s_iconNote);
 			s_icons[weapon].triedGen = s_tableGen;
-			return false;
+			s_icons[weapon].result   = WeaponEsp::IconNotFound;
+			return WeaponEsp::IconNotFound;
 		}
 
 		unsigned char* rgba = 0;
 		int w = 0, h = 0;
-		const bool decoded = DecodeTga(tga, len, &rgba, &w, &h);
+		const bool decoded = WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h);
+		const unsigned int tgaLen = (unsigned int)len;
 		free(tga);
 		if (!decoded)
 		{
+			char detail[280];
+			snprintf(detail, sizeof(detail), "%.200s, %u bytes", search.foundIn, tgaLen);
+			SetIconNote(icon, "found, but not a TGA this loader reads", detail);
+			Log("[kutaQ3] weapon icon %s", s_iconNote);
 			s_icons[weapon].triedGen = s_tableGen;
-			return false;
+			s_icons[weapon].result   = WeaponEsp::IconUnreadable;
+			return WeaponEsp::IconUnreadable;
 		}
 
 		const bool uploaded = UploadIcon(weapon, icon, rgba, w, h);
-		if (!uploaded)
-			s_icons[weapon].triedGen = s_tableGen;
 		free(rgba);
-		return uploaded;
+		if (!uploaded)
+		{
+			SetIconNote(icon, "decoded, but GL would not take the texture", search.foundIn);
+			Log("[kutaQ3] weapon icon %s", s_iconNote);
+			return WeaponEsp::IconNoTexture;
+		}
+
+		out = s_icons[weapon];             // the freshly uploaded texture, for this frame's quad
+		return WeaponEsp::IconOk;
 	}
 
 }
 
 #else // !defined(_WIN32) - the test build: no VM to scan, no paks to read
 
-	// The stock table is the only table the non-Windows build can have, and no icon texture can
-	// be loaded: icon mode falls through to the chip, which is what the GL tests assert on.
+	// The stock table is the only table the non-Windows build can have, and the paks cannot be read
+	// on this host: icon mode always falls through to the chip. The reason is IconNotFound - there
+	// is nowhere to look for the file - which is what the GL tests assert on.
 	void EnsureWeaponTable()
 	{
 		if (!s_tableForVm)
@@ -887,10 +724,13 @@ namespace
 		}
 	}
 
-	bool EnsureIconTexture(int weapon, IconTex& out)
+	WeaponEsp::IconResult EnsureIconTexture(int weapon, IconTex& out)
 	{
+		memset(&out, 0, sizeof(out));
+		if (weapon < 0 || weapon >= WeaponEsp::kTableWeapons)
+			return WeaponEsp::IconNoName;
 		out = s_icons[weapon];
-		return out.valid;
+		return out.valid ? WeaponEsp::IconOk : WeaponEsp::IconNotFound;
 	}
 
 #endif // _WIN32
@@ -917,10 +757,16 @@ int WeaponEsp::TableWeaponCount()
 	return s_table.weaponCount;
 }
 
+const char* WeaponEsp::LastIconNote()
+{
+	return s_iconNote;
+}
+
 void WeaponEsp::Draw()
 {
 	s_stats.drawn = s_stats.inView = s_stats.edge = s_stats.behind = s_stats.faded = 0;
 	s_stats.iconsMissing = 0;
+	s_stats.iconsNotInPak = s_stats.iconsBadData = s_stats.iconsNoUpload = 0;
 	if (!Config::g_Settings.weaponEsp)
 	{
 		// off: forget every fade, so turning the feature back on ramps the tags in again
@@ -1068,13 +914,17 @@ void WeaponEsp::Draw()
 					y = 0.0f;
 
 				IconTex tex;
-				if (EnsureIconTexture(tag.weapon, tex))
+				const WeaponEsp::IconResult icon = EnsureIconTexture(tag.weapon, tex);
+				if (icon == WeaponEsp::IconOk)
 				{
 					// 1px black outline for readability, then the icon itself
 					GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
 
 					glEnable(GL_TEXTURE_2D);
 					glBindTexture(GL_TEXTURE_2D, tex.tex);
+					// the fade and the dim ride on the current colour, so the icon's own alpha
+					// has to be multiplied into it rather than added
+					glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 					glColor4f(1.0f, 1.0f, 1.0f, alpha * (p.inView ? 1.0f : 0.55f));
 					glBegin(GL_QUADS);
 					glTexCoord2f(0.0f, 0.0f); glVertex2f(x, y);
@@ -1086,14 +936,21 @@ void WeaponEsp::Draw()
 				}
 				else
 				{
-					// no texture for this weapon (icon not in the paks, or a mod weapon the
-					// table has no icon for): mark the position with a neutral chip
+					// No texture for this weapon: mark the position with a neutral chip, and count
+					// WHY there is none - "the paks do not have it", "the file is not readable" and
+					// "GL refused the upload" are three very different reports in the menu.
 					GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
 					unsigned char chipRgb[3] = { kChipRgb[0], kChipRgb[1], kChipRgb[2] };
 					if (!p.inView)
 						Dim(chipRgb);
 					GL::DrawFilledRectAlpha(x, y, size, size, chipRgb, alpha);
 					++s_stats.iconsMissing;
+					if (icon == WeaponEsp::IconNotFound)
+						++s_stats.iconsNotInPak;
+					else if (icon == WeaponEsp::IconUnreadable)
+						++s_stats.iconsBadData;
+					else if (icon == WeaponEsp::IconNoTexture)
+						++s_stats.iconsNoUpload;
 				}
 
 				++s_stats.drawn;
