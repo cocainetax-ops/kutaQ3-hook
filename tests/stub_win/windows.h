@@ -177,6 +177,58 @@ HMODULE GetModuleHandleA(LPCSTR moduleName);
 HANDLE GetCurrentThread(void);
 DWORD  timeGetTime(void);
 
+// ---- files and directories: the WEAPON ESP icon loader (weaponEsp.cpp) ------------------------
+#define GENERIC_READ        0x80000000L
+#define FILE_SHARE_READ     0x00000001L
+#define OPEN_EXISTING       3
+#define FILE_ATTRIBUTE_NORMAL    0x00000080
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+#define INVALID_HANDLE_VALUE ((HANDLE)(long long)-1)
+#define FILE_BEGIN           0
+#define INVALID_SET_FILE_POINTER ((DWORD)-1)
+
+typedef struct _LARGE_INTEGER
+{
+	long long QuadPart;
+} LARGE_INTEGER;
+
+HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
+                   LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
+                   DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+void   CloseHandle(HANDLE hObject);
+DWORD  SetFilePointer(HANDLE hFile, LONG nDistanceToMove, LONG* lpDistanceToMoveHigh,
+                      DWORD dwMoveMethod);
+BOOL   ReadFile(HANDLE hFile, void* lpBuffer, DWORD nNumberOfBytesToRead,
+                DWORD* lpNumberOfBytesRead, void* lpOverlapped);
+BOOL   GetFileSizeEx(HANDLE hFile, LARGE_INTEGER* lpFileSize);
+DWORD  GetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize);
+
+typedef struct _WIN32_FIND_DATAA
+{
+	DWORD dwFileAttributes;
+	void* ftCreationTime;
+	void* ftLastAccessTime;
+	void* ftLastWriteTime;
+	DWORD nFileSizeHigh;
+	DWORD nFileSizeLow;
+	DWORD dwReserved0;
+	DWORD dwReserved1;
+	CHAR  cFileName[MAX_PATH];
+	CHAR  cAlternateFileName[14];
+} WIN32_FIND_DATAA;
+
+HANDLE FindFirstFileA(LPCSTR lpFileName, WIN32_FIND_DATAA* lpFindFileData);
+BOOL   FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA* lpFindFileData);
+BOOL   FindClose(HANDLE hFindFile);
+
+// ---- ntdll (RtlDecompressBuffer) and the rest --------------------------------------------------
+typedef long     NTSTATUS;
+typedef ULONG*   PULONG;
+
+int     _stricmp(const char* s1, const char* s2);
+HDC     wglGetCurrentDC(void);
+void*   GetProcAddress(HMODULE hModule, LPCSTR lpProcName);
+
 // ---- the *_s CRT helpers the hook uses, array sized the way MSVC sizes them --------------------
 #define _TRUNCATE ((size_t)-1)
 

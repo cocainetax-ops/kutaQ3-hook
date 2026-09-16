@@ -17,6 +17,7 @@
 #include "nameEsp.h"
 #include "distanceEsp.h"
 #include "healthEsp.h"
+#include "weaponEsp.h"
 #include "fake_engine.h"
 #include "config.h"
 #include "check.h"
@@ -147,6 +148,61 @@ namespace
 		if (i < 0 || i >= (int)bakes.size())
 			return 0;
 		return (unsigned int)bakes[i]->a[2];
+	}
+
+	// BuildWorld() with the players' current weapons stamped on the snapshot before the gather,
+	// and a fourth player who is carrying no weapon at all (WP_NONE).
+	bool BuildArmedWorld()
+	{
+		const float here[3]   = { 0.0f, 0.0f, 0.0f };
+		const float none[3]   = { 0.0f, 0.0f, 0.0f };
+		const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+		FakeEngine::Reset();
+		NameEsp::Reset();
+		FakeEngine::SetSnapshotTime(1000);
+		FakeEngine::SetFovString("90");
+		FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+		FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\1", (const float[]){ 128.0f,  128.0f, 0.0f });
+		FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\2",           (const float[]){ 128.0f, -128.0f, 0.0f });
+		FakeEngine::SetPlayer(3, "\\n\\Behind\\t\\0",          (const float[]){ -500.0f,   0.0f, 0.0f });
+		FakeEngine::SetPlayer(4, "\\n\\NoWeapon\\t\\0",        (const float[]){ 200.0f,   60.0f, 0.0f });
+		FakeEngine::SetPlayerWeapon(1, 4);   // WP_GRENADE_LAUNCHER
+		FakeEngine::SetPlayerWeapon(2, 2);   // WP_MACHINEGUN
+		FakeEngine::SetPlayerWeapon(3, 7);   // WP_RAILGUN (behind the viewer: counted behind)
+		FakeEngine::SetPlayerWeapon(4, 0);   // WP_NONE: the game shows no weapon there either
+
+		return NameEsp::Gather(1000, FakeEngine::Syscall());
+	}
+
+	// where the overlay should have put a weapon tag centred on this screen point - the same
+	// centring plus the same on-screen clamp weaponEsp.cpp applies
+	void ExpectedWeaponAt(const NameEsp::ScreenPoint& p, const char* name, float& x, float& y)
+	{
+		const float textWidth = kCharWidth * (float)strlen(name);
+		x = p.x - textWidth * 0.5f;
+		y = p.y;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (x + textWidth + 1.0f > (float)kVpW)
+			x = (float)kVpW - textWidth - 1.0f;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (y < 0.0f)
+			y = 0.0f;
+		if (y + 14.0f + 1.0f > (float)kVpH)   // FONT_HEIGHT
+			y = (float)kVpH - 14.0f - 1.0f;
+		if (y < 0.0f)
+			y = 0.0f;
+	}
+
+	// the screen point of a player's LEG anchor (the weapon ESP's anchor, below the feet)
+	bool ProjectLeg(const NameEsp::PlayerTag& tag, NameEsp::ScreenPoint& out)
+	{
+		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+		float leg[3];
+		WeaponEsp::LegAnchor(tag, leg);
+		return NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, leg, out);
 	}
 
 	// the (x, y) of the first vertex of the first GL_QUADS in the stream - with the ESP draws
@@ -1041,9 +1097,358 @@ static void TestDistanceScaleAndFade()
 	CHECK_INT(DistanceEsp::LastDrawStats().faded, 1, "counted as faded, not drawn");
 }
 
+// =============================================================================================== //
+// WEAPON ESP: the weapon name (or icon) at the LEG position, the stacking against the
+// head-anchored ESPs, and the scale + fade with range
+// =============================================================================================== //
+
+static void TestWeaponTextAtLeg()
+{
+	Section("WEAPON ESP text mode - the weapon name at the leg position, through walls");
+
+	CHECK_TRUE(BuildArmedWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157D;   // a fresh context: the faces must be baked
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp      = false;
+	Config::g_Settings.distanceEsp  = false;
+	Config::g_Settings.healthEsp    = false;
+	Config::g_Settings.weaponEsp    = true;
+	Config::g_Settings.weaponEspStyle = 0;        // text
+	WeaponEsp::ResetDrawState();
+	WeaponEsp::Draw();
+
+	// the six faces span FONT_HEIGHT down to kMinScale, baked for the fresh context
+	{
+		const std::vector<const Rec::Call*> bakes = Rec::All("CreateFontA");
+		CHECK_INT((int)bakes.size(), 6, "six font buckets baked");
+	}
+
+	// two armed players ahead of the viewer get their weapon's name; the player behind the
+	// viewer is skipped; the player with WP_NONE gets no tag at all
+	CHECK_INT(CountTextCalls("Grenade Launcher"), 2, "\"Grenade Launcher\" drawn twice (shadow + text)");
+	CHECK_INT(CountTextCalls("Machinegun"), 2, "\"Machinegun\" drawn twice");
+	CHECK_INT(CountTextCalls("Railgun"), 0, "the player behind the viewer is not drawn");
+	CHECK_INT(CountTextCalls("NoWeapon"), 0, "WP_NONE shows no weapon");
+	CHECK_INT(CountTextCalls("Bitterman"), 0, "the name ESP is off: no player names");
+
+	// position: centred on the LEG anchor's projection (NOT the head anchor), in the stock
+	// 1.32 table's name for the snapshot's weapon number
+	const NameEsp::PlayerTag* b1 = FindTag(1);
+	const NameEsp::PlayerTag* b2 = FindTag(2);
+	CHECK_TRUE(b1 != NULL && b2 != NULL, "both tagged players present");
+	if (b1 && b2)
+	{
+		NameEsp::ScreenPoint leg1, head1;
+		CHECK_TRUE(ProjectLeg(*b1, leg1), "player 1's leg projects");
+		const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, head1),
+		           "player 1's head projects");
+		CHECK_TRUE(fabsf(leg1.y - head1.y) > 20.0f, "the leg anchor is clearly below the head anchor");
+
+		float want1x = 0.0f, want1y = 0.0f, want2x = 0.0f, want2y = 0.0f;
+		ExpectedWeaponAt(leg1, "Grenade Launcher", want1x, want1y);
+		NameEsp::ScreenPoint leg2;
+		CHECK_TRUE(ProjectLeg(*b2, leg2), "player 2's leg projects");
+		ExpectedWeaponAt(leg2, "Machinegun", want2x, want2y);
+
+		int checked = 0;
+		const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+		for (size_t i = 0; i < texts.size(); ++i)
+		{
+			if (texts[i]->text != "Grenade Launcher" && texts[i]->text != "Machinegun")
+				continue;
+			const Rec::Call* pos = Rec::Prev(texts[i], "glRasterPos2f");
+			CHECK_TRUE(pos != NULL, "the weapon text has a raster position");
+			if (!pos)
+				continue;
+			const bool isShadow = (texts[i]->rgb == 0x000000u);
+			const bool isLeft = texts[i]->text == "Grenade Launcher";
+			const float wantX = isLeft ? want1x : want2x;
+			const float wantY = isLeft ? want1y : want2y;
+			char what[96];
+			snprintf(what, sizeof(what), "\"%s\"%s raster x", texts[i]->text.c_str(), isShadow ? " shadow" : "");
+			CHECK_NEAR(pos->a[0], wantX + (isShadow ? 1.0f : 0.0f), 0.02, what);
+			snprintf(what, sizeof(what), "\"%s\"%s raster y (the LEG anchor)", texts[i]->text.c_str(), isShadow ? " shadow" : "");
+			CHECK_NEAR(pos->a[1], wantY + (isShadow ? 1.0f : 0.0f), 0.02, what);
+			if (!isShadow)
+				CHECK_UINT(texts[i]->rgb, 0xFF8C00u, "saturated orange, not a team colour");
+			++checked;
+		}
+		CHECK_INT(checked, 4, "all four issued texts were checked");
+	}
+
+	const WeaponEsp::DrawStats& st = WeaponEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 2, "two weapon tags drawn");
+	CHECK_INT(st.inView, 2, "both ahead of the viewer");
+	CHECK_INT(st.edge, 0, "none at the edge");
+	CHECK_INT(st.behind, 1, "one skipped behind the viewer");
+	CHECK_INT(st.faded, 0, "nothing faded out");
+	CHECK_INT(st.iconsMissing, 0, "text mode uses no icons");
+
+	// feature off: nothing issued, stats zeroed
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.weaponEsp = false;
+	WeaponEsp::Draw();
+	CHECK_INT(Rec::Count("glCallLists"), 0, "feature off -> no text");
+	const WeaponEsp::DrawStats& z = WeaponEsp::LastDrawStats();
+	CHECK_INT(z.drawn, 0, "feature off -> zero drawn");
+}
+
+static void TestWeaponIconChips()
+{
+	Section("WEAPON ESP icon mode - the icon quad at the leg position (chip when no texture)");
+
+	// In this build no cgame paks exist, so EnsureIconTexture() always fails and the icon is
+	// drawn as its neutral chip - what the check below asserts. On Windows the same path
+	// uploads the real TGA and draws a textured quad instead (glBindTexture + glTexCoord2f).
+	CHECK_TRUE(BuildArmedWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157E;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp      = false;
+	Config::g_Settings.distanceEsp  = false;
+	Config::g_Settings.healthEsp    = false;
+	Config::g_Settings.weaponEsp    = true;
+	Config::g_Settings.weaponEspStyle = 1;        // icon
+	WeaponEsp::ResetDrawState();
+	WeaponEsp::Draw();
+
+	// two players ahead, each: one outline (LINE_STRIP) + one filled quad (the chip)
+	CHECK_INT(Rec::Count("glBegin"), 4, "two chips: an outline and a filled quad each");
+	CHECK_INT(Rec::Count("glCallLists"), 0, "icon mode prints no text");
+
+	// the chip is centred on the leg projection, kIconBaseSizePx across at full scale, with the
+	// same on-screen clamp as the rest of the overlay
+	const NameEsp::PlayerTag* b1 = FindTag(1);
+	CHECK_TRUE(b1 != NULL, "player 1 is in the frame");
+	if (b1)
+	{
+		NameEsp::ScreenPoint leg;
+		CHECK_TRUE(ProjectLeg(*b1, leg), "player 1's leg projects");
+		const float size = (float)WeaponEsp::kIconBaseSizePx;   // scale 1 at this range
+		float wantX = leg.x - size * 0.5f;
+		float wantY = leg.y - size * 0.5f;
+		if (wantX < 0.0f) wantX = 0.0f;
+		if (wantX + size + 1.0f > (float)kVpW) wantX = (float)kVpW - size - 1.0f;
+		if (wantX < 0.0f) wantX = 0.0f;
+		if (wantY < 0.0f) wantY = 0.0f;
+		if (wantY + size + 1.0f > (float)kVpH) wantY = (float)kVpH - size - 1.0f;
+		if (wantY < 0.0f) wantY = 0.0f;
+
+		float chipX = 0.0f, chipY = 0.0f;
+		CHECK_TRUE(FirstQuadOrigin(chipX, chipY), "a chip quad was issued");
+		CHECK_NEAR(chipX, wantX, 0.02, "the chip's x is the leg x minus half its size");
+		CHECK_NEAR(chipY, wantY, 0.02, "the chip's y is the leg y minus half its size");
+
+		// and it is the chip colour, not the weapon's team colour
+		std::vector<Rec::Call>& calls = Rec::Calls();
+		for (size_t i = 0; i < calls.size(); ++i)
+		{
+			if (calls[i].fn == "glBegin" && (int)calls[i].a[0] == 0x0007)   // the first GL_QUADS
+			{
+				CHECK_UINT(calls[i].rgb, 0x5ADCEBu, "the chip is the neutral chip colour");
+				break;
+			}
+		}
+	}
+
+	const WeaponEsp::DrawStats& st = WeaponEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 2, "two icons drawn");
+	CHECK_INT(st.inView, 2, "both ahead of the viewer");
+	CHECK_INT(st.behind, 1, "one skipped behind the viewer");
+	CHECK_INT(st.iconsMissing, 2, "both in-view icons fell back to the chip");
+
+	// the WP_NONE player drew nothing, armed or not
+	CHECK_INT(st.drawn, 2, "the WP_NONE player has no icon either");
+}
+
+static void TestWeaponStackingBelowHeadStack()
+{
+	Section("WEAPON ESP stacking - the leg tag sits below the whole head-anchored stack");
+
+	CHECK_TRUE(BuildArmedWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157F;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp      = true;
+	Config::g_Settings.distanceEsp  = true;
+	Config::g_Settings.healthEsp    = true;
+	Config::g_Settings.weaponEsp    = true;
+	Config::g_Settings.weaponEspStyle = 0;        // text
+	NameEsp::ResetDrawState();
+	DistanceEsp::ResetDrawState();
+	HealthEsp::ResetDrawState();
+	WeaponEsp::ResetDrawState();
+	NameEsp::Draw();
+	DistanceEsp::Draw();
+	HealthEsp::Draw();
+	WeaponEsp::Draw();
+
+	const NameEsp::PlayerTag* b1 = FindTag(1);
+	CHECK_TRUE(b1 != NULL, "player 1 is in the frame");
+	if (!b1)
+		return;
+	const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+	NameEsp::ScreenPoint head;
+	CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, head),
+	           "head projects");
+
+	// the head-anchored stack: the name on the anchor, the distance one row below, the bar two
+	// rows below (the lowest head-anchored thing that can be drawn)
+	float nameX = 0.0f, nameY = 0.0f;
+	ExpectedCentreAt(head, "Bitterman", nameX, nameY);
+	const float stackBottom = nameY + 2.0f * NameEsp::kEspRowHeight + 14.0f;
+
+	// the weapon tag: centred on the leg projection - a full model height below the head
+	NameEsp::ScreenPoint leg;
+	CHECK_TRUE(ProjectLeg(*b1, leg), "the leg projects");
+	float wantX = 0.0f, wantY = 0.0f;
+	ExpectedWeaponAt(leg, "Grenade Launcher", wantX, wantY);
+
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	bool sawWeapon = false;
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		const Rec::Call* text = texts[i];
+		if (text->text != "Grenade Launcher" || text->rgb == 0x000000u)
+			continue;                       // the non-shadow weapon text
+		const Rec::Call* pos = Rec::Prev(text, "glRasterPos2f");
+		if (!pos)
+			continue;
+		sawWeapon = true;
+		CHECK_NEAR(pos->a[0], wantX, 0.02, "the weapon tag is centred on the leg x");
+		CHECK_NEAR(pos->a[1], wantY, 0.02, "the weapon tag is at the leg y");
+		CHECK_TRUE(pos->a[1] > stackBottom,
+		           "the weapon tag sits BELOW the name + distance + health stack, no overlap");
+	}
+	CHECK_TRUE(sawWeapon, "the weapon tag was drawn with all four ESPs on");
+}
+
+static void TestWeaponScaleAndFade()
+{
+	Section("WEAPON ESP scales down and fades out with range, like the other ESPs");
+
+	// one bot 1500 units straight ahead: mid-fade, so neither the full-size face nor full
+	// opacity is what the tag goes out in
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Far\\t\\0", (const float[]){ 1500.0f, 0.0f, 0.0f });
+	FakeEngine::SetPlayerWeapon(1, 6);        // WP_LIGHTNING
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+	const NameEsp::PlayerTag* tag = FindTag(1);
+	CHECK_TRUE(tag != NULL, "the far player is in the frame");
+	if (!tag)
+		return;
+	{
+		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag->lerpOrigin);
+		CHECK_NEAR(tag->distance, want, 0.01, "distance is |vieworg - lerpOrigin|");
+	}
+
+	Rec::CurrentDC() = (void*)(size_t)0xD1580;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp      = false;
+	Config::g_Settings.distanceEsp  = false;
+	Config::g_Settings.healthEsp    = false;
+	Config::g_Settings.weaponEsp    = true;
+	Config::g_Settings.weaponEspStyle = 0;
+	WeaponEsp::ResetDrawState();
+
+	WeaponEsp::Draw();
+	unsigned int wantBase = 0;
+	{
+		const std::vector<const Rec::Call*> bakes = Rec::All("CreateFontA");
+		CHECK_INT((int)bakes.size(), 6, "six font buckets baked for the fresh context");
+		// the mid-range tag (scale 9.2px) must go out in the 10px face: the third bucket
+		wantBase = ListBaseOfBake(2) - 32;      // EmitText sets the list base to base - 32
+		CHECK_TRUE(wantBase != 0, "the 10px face has a list base");
+	}
+
+	// drive the fade-in ramp to completion, so the alpha left on the final frame is the
+	// distance fade alone
+	for (int i = 1; i <= 30; ++i)
+	{
+		CHECK_TRUE(NameEsp::Gather(1000 + i * 16, FakeEngine::Syscall()), "later frame gathered");
+		Rec::Reset(0, 0, kVpW, kVpH);
+		WeaponEsp::Draw();
+	}
+
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	bool sawText = false;
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		const Rec::Call* text = texts[i];
+		if (text->text != "Lightning Gun" || text->rgb == 0x000000u)
+			continue;
+		sawText = true;
+		CHECK_UINT(text->listBase, wantBase, "the mid-range tag uses the scaled-down face");
+		const float t = (tag->distance - DistanceEsp::kFadeStartDist) /
+		               (DistanceEsp::kFadeEndDist - DistanceEsp::kFadeStartDist);
+		CHECK_NEAR(text->alpha, 1.0f - t, 0.01, "faded by the distance ramp");
+	}
+	CHECK_TRUE(sawText, "the far tag was drawn");
+
+	// and a player past the fade end is dropped entirely
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(2000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Gone\\t\\0", (const float[]){ 3000.0f, 0.0f, 0.0f });
+	FakeEngine::SetPlayerWeapon(1, 6);
+	CHECK_TRUE(NameEsp::Gather(2000, FakeEngine::Syscall()), "far frame gathered");
+	const NameEsp::PlayerTag* gone = FindTag(1);
+	CHECK_TRUE(gone != NULL, "the very far player is in the frame");
+	if (gone)
+		CHECK_TRUE(gone->distance > DistanceEsp::kFadeEndDist, "really past the fade end");
+	Rec::Reset(0, 0, kVpW, kVpH);
+	WeaponEsp::ResetDrawState();
+	WeaponEsp::Draw();
+	CHECK_INT(Rec::Count("glCallLists"), 0, "past the fade end: nothing issued");
+	CHECK_INT(WeaponEsp::LastDrawStats().faded, 1, "counted as faded, not drawn");
+}
+
+static void TestWeaponModelFallback()
+{
+	Section("WEAPON ESP model mode - no registered models here: the icon style is the fallback");
+
+	// Off Windows (this build) EnsureModelHandles() never registers a model, so every
+	// Model-mode tag must fall back to the icon - exactly the icon-mode path (a chip where
+	// the texture cannot be loaded), with the shortfall counted for the menu.
+	CHECK_TRUE(BuildArmedWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157A;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp      = false;
+	Config::g_Settings.distanceEsp  = false;
+	Config::g_Settings.healthEsp    = false;
+	Config::g_Settings.weaponEsp    = true;
+	Config::g_Settings.weaponEspStyle      = 2;   // model
+	Config::g_Settings.weaponEspModelScale = 2.0f; // inert off Windows: nothing to scale
+	WeaponEsp::ResetDrawState();
+	WeaponEsp::Draw();
+
+	const WeaponEsp::DrawStats& st = WeaponEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 2, "the two armed players are still tagged");
+	CHECK_INT(st.modelsMissing, 2, "both fell back: no model is registered in this build");
+	CHECK_INT(st.iconsMissing, 2, "and the fallback icons have no texture here either (chips)");
+	CHECK_INT(st.behind, 1, "the player behind the viewer is still skipped");
+	CHECK_INT(st.faded, 0, "nothing faded out");
+	// the fallback is the icon path itself: two chips, one outline + one filled quad each
+	CHECK_INT(Rec::Count("glBegin"), 4, "two chips issued through the icon path");
+	CHECK_INT(Rec::Count("glCallLists"), 0, "no text");
+
+	// the scale setting must not disturb the fallback (the 2D icon uses the distance ramp only)
+	float chipX = 0.0f, chipY = 0.0f;
+	CHECK_TRUE(FirstQuadOrigin(chipX, chipY), "a chip quad was issued");
+}
+
 int main(void)
 {
-	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + glText.cpp + glDraw.cpp)\n");
+	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + weaponEsp.cpp + glText.cpp + glDraw.cpp)\n");
 
 	TestFontIsBuiltOnce();
 	TestOverlayState();
@@ -1058,6 +1463,11 @@ int main(void)
 	TestDistanceTagsDrawn();
 	TestDistanceStackingWithAllThree();
 	TestDistanceScaleAndFade();
+	TestWeaponTextAtLeg();
+	TestWeaponIconChips();
+	TestWeaponModelFallback();
+	TestWeaponStackingBelowHeadStack();
+	TestWeaponScaleAndFade();
 
 	CHECK_SUMMARY("gl");
 	return g_failed ? 1 : 0;

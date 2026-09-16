@@ -45,8 +45,10 @@ code in, but that is a judgement call to make deliberately, not by accident.
 
 ## What is here and why
 
-22 headers, 12 `.c` files and 1 `.cpp` — 8 engine sources that compile
-anywhere, 2 win32 sources kept as reference, and the 3 kutaQ3 layout harnesses.
+22 headers, 14 `.c` files and 1 `.cpp` — 8 engine sources that compile
+anywhere, 2 win32 sources kept as reference, 2 renderer sources kept for the
+Model-mode behaviours they document (`tr_scene.c`, `tr_backend.c` — see
+below), and the 3 kutaQ3 layout harnesses.
 The directory
 layout under `code/` is upstream's own — do not flatten it, because the engine
 headers `#include` each other by relative path (`"../game/q_shared.h"`).
@@ -96,6 +98,25 @@ renderer ABI. `cg_main.c` shows the `vmMain()` dispatch.
 ### `code/renderer/` + `code/ui/`
 `tr_public.h` (`refimport_t` / `refexport_t`, `REF_API_VERSION 8`) and
 `ui_public.h` (`uiImport_t` / `uiExport_t`, `UI_API_VERSION 6`).
+
+`tr_scene.c` and `tr_backend.c` are kept because the WEAPON ESP's 3D Model mode
+pushes a `refEntity_t` through `refexport_t::AddRefEntityToScene` and relies on
+two behaviours that are only true because of what these two files do:
+
+- **`tr_scene.c:RE_AddRefEntityToScene()` is overflow-safe.** Past
+  `ENTITYNUM_WORLD` entities it silently `return`s (the zerowing bug #402 fix),
+  and it `ERR_DROP`s only on a bad `reType`. Appending a handful of model
+  entities a frame can therefore never crash the renderer — worst case they are
+  dropped. The entity is copied into `backEndData[smpFrame]->entities[]`, so
+  the pointer only has to stay valid for the duration of the call.
+- **`tr_backend.c:RB_DrawSurfaces()` is what `RF_DEPTHHACK` does.** Per entity
+  it compresses the depth range to `qglDepthRange(0, 0.3)` ("hack the depth
+  range to prevent view model from poking into walls"), so the entity's
+  surfaces write to the near front of the z buffer and nothing in the world
+  can occlude them — the through-wall mechanism the cgame's own name tags use.
+  `RF_MINLIGHT` keeps the model lit in unlit corners; together with
+  `RT_MODEL` + `nonNormalizedAxes` (scale carried in the axis matrix) that is
+  exactly the refEntity the ESP builds (`weaponEsp.h:PlanModelEntity`).
 
 ### `code/win32/` — directly relevant to this repo's `dinputHook`
 `win_input.c` is the authoritative description of the legacy DirectInput mouse

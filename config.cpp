@@ -23,6 +23,9 @@ void Config::ResetToDefaults(Settings& s)
 	s.distanceEsp            = true;
 	s.healthEsp              = true;
 	s.healthEspSpawnHealth   = 100;
+	s.weaponEsp              = true;
+	s.weaponEspStyle         = 0;
+	s.weaponEspModelScale    = 1.0f;
 	s.logShaders             = true;
 	s.hasLegacyMenuLayout    = false;
 	s.menuX                  = 60.0f;
@@ -194,6 +197,34 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 			}
 			return;
 		}
+		if (EqualsNoCase(key, "WeaponEspEnabled")) { ParseBool(value, s.weaponEsp); return; }
+		if (EqualsNoCase(key, "WeaponEspStyle"))
+		{
+			int style = s.weaponEspStyle;
+			if (EqualsNoCase(value, "text") || EqualsNoCase(value, "icon") ||
+			    EqualsNoCase(value, "model"))
+				style = EqualsNoCase(value, "model") ? 2 : (EqualsNoCase(value, "icon") ? 1 : 0);
+			else if (ParseInt(value, style))
+			{
+				if (style < 0) style = 0;
+				if (style > 2) style = 2;
+			}
+			else
+				return;
+			s.weaponEspStyle = style;
+			return;
+		}
+		if (EqualsNoCase(key, "WeaponEspModelScale"))
+		{
+			float scale = s.weaponEspModelScale;
+			if (ParseFloat(value, scale))
+			{
+				if (scale < 0.25f) scale = 0.25f;
+				if (scale > 4.0f)  scale = 4.0f;
+				s.weaponEspModelScale = scale;
+			}
+			return;
+		}
 	}
 
 	// legacy [Menu] from the first save/load revision - only used if kutaQ3_imgui.ini is missing
@@ -304,6 +335,9 @@ bool Config::Save()
 	file << "DistanceEspEnabled=" << (s.distanceEsp ? 1 : 0) << " ; 1 = distance in metres above players (scaled + faded with range)\n";
 	file << "HealthEspEnabled=" << (s.healthEsp ? 1 : 0) << "   ; 1 = health bars above players (last EV_PAIN sample, estimated until hit)\n";
 	file << "HealthEspSpawnHealth=" << s.healthEspSpawnHealth << " ; 1..200, HP an unmeasured player (no hit since spawn) is drawn at\n";
+	file << "WeaponEspEnabled=" << (s.weaponEsp ? 1 : 0) << "     ; 1 = the player's current weapon at their leg position (read through the cgame's own weapon table)\n";
+	file << "WeaponEspStyle=" << s.weaponEspStyle << "           ; 0 = text (weapon name), 1 = icon (the cgame's item icon for the weapon), 2 = model (the weapon's 3D model in the world)\n";
+	file << "WeaponEspModelScale=" << s.weaponEspModelScale << "   ; Model style only: uniform scale of the weapon model (0.25..4.0)\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
 	file.close();
 

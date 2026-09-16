@@ -15,11 +15,13 @@
 #include "nameEsp.h"
 #include "distanceEsp.h"
 #include "healthEsp.h"
+#include "weaponEsp.h"
 #include "fake_engine.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 // the engine's own angle maths, from SDK/code/game/q_math.c
 extern "C" void AngleVectors(const float angles[3], float forward[3], float right[3], float up[3]);
@@ -1360,6 +1362,579 @@ static void TestDistanceEsp()
 	}
 }
 
+// =============================================================================================== //
+// WEAPON ESP - the portable half (weaponEspCore.cpp)
+// =============================================================================================== //
+
+static void TestWeaponNumberGather()
+{
+	Section("PlayerTag::weapon - the snapshot's weapon field reaches the tag");
+
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\1", (const float[]){ 128.0f, 0.0f, 0.0f });
+	FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\2",         (const float[]){ 0.0f, -128.0f, 0.0f });
+	FakeEngine::SetPlayerWeapon(1, 4);   // WP_GRENADE_LAUNCHER
+	FakeEngine::SetPlayerWeapon(2, 2);   // WP_MACHINEGUN
+
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+	const NameEsp::Frame& frame = NameEsp::Current();
+	CHECK_INT(frame.playerCount, 2, "two players tagged");
+
+	int found1 = -1, found2 = -1;
+	for (int i = 0; i < frame.playerCount; ++i)
+	{
+		if (frame.players[i].clientNum == 1) found1 = i;
+		if (frame.players[i].clientNum == 2) found2 = i;
+	}
+	CHECK_INT(found1, 0, "client 1 tagged (first other player in entity order)");
+	CHECK_INT(found2, 1, "client 2 tagged");
+	if (found1 >= 0 && found2 >= 0)
+	{
+		CHECK_INT(frame.players[found1].weapon, 4, "client 1 weapon is the snapshot's (4)");
+		CHECK_INT(frame.players[found2].weapon, 2, "client 2 weapon is the snapshot's (2)");
+	}
+
+	// a mod weapon number outside the stock set still reaches the tag untouched - resolving it
+	// to a display string is the ESP's job, not Gather's
+	FakeEngine::NewServerFrame(1050);
+	FakeEngine::SetPlayer(1, "\\n\\^1Bitterman^7\\t\\1", (const float[]){ 128.0f, 0.0f, 0.0f });
+	FakeEngine::SetPlayer(2, "\\n\\Slash\\t\\2",         (const float[]){ 0.0f, -128.0f, 0.0f });
+	FakeEngine::SetPlayerWeapon(1, 15);
+	FakeEngine::SetPlayerWeapon(2, 2);
+	CHECK_TRUE(NameEsp::Gather(1050, FakeEngine::Syscall()), "frame gathered (weapon 15)");
+	const NameEsp::Frame& frame2 = NameEsp::Current();
+	for (int i = 0; i < frame2.playerCount; ++i)
+		if (frame2.players[i].clientNum == 1)
+			CHECK_INT(frame2.players[i].weapon, 15, "an out-of-stock weapon number is preserved");
+}
+
+static void TestWeaponStockTable()
+{
+	Section("WeaponEsp::StockTable - the built-in 1.32 names and icons");
+
+	WeaponEsp::WeaponTable table;
+	WeaponEsp::StockTable(table);
+
+	CHECK_INT(table.weaponCount, 13, "thirteen stock weapons listed");
+	CHECK_TRUE(table.haveName[1]  && strcmp(table.weapons[1].name,  "Gauntlet") == 0, "1 = Gauntlet");
+	CHECK_TRUE(table.haveName[2]  && strcmp(table.weapons[2].name,  "Machinegun") == 0, "2 = Machinegun");
+	CHECK_TRUE(table.haveName[4]  && strcmp(table.weapons[4].name,  "Grenade Launcher") == 0, "4 = Grenade Launcher");
+	CHECK_TRUE(table.haveName[6]  && strcmp(table.weapons[6].name,  "Lightning Gun") == 0, "6 = Lightning Gun");
+	CHECK_TRUE(table.haveName[10] && strcmp(table.weapons[10].name, "Grappling Hook") == 0, "10 = Grappling Hook");
+	CHECK_TRUE(table.haveIcon[2]  && strcmp(table.weapons[2].icon,  "icons/iconw_machinegun") == 0, "icon 2");
+	CHECK_TRUE(table.haveIcon[4]  && strcmp(table.weapons[4].icon,  "icons/iconw_grenade") == 0, "icon 4 (iconw_grenade)");
+	CHECK_TRUE(table.haveIcon[5]  && strcmp(table.weapons[5].icon,  "icons/iconw_rocket") == 0, "icon 5 (iconw_rocket)");
+	CHECK_TRUE(!table.haveName[0], "WP_NONE (0) has no name");
+
+	char name[64];
+	CHECK_TRUE(WeaponEsp::WeaponName(table, 2, name, sizeof(name)) && strcmp(name, "Machinegun") == 0,
+	           "WeaponName returns the table name");
+	CHECK_TRUE(!WeaponEsp::WeaponName(table, 0, name, sizeof(name)), "WeaponName: WP_NONE -> nothing to show");
+	CHECK_TRUE(WeaponEsp::WeaponName(table, 14, name, sizeof(name)) && strcmp(name, "W14") == 0,
+	           "WeaponName: an unlisted in-range number falls back to W<number>");
+	CHECK_TRUE(WeaponEsp::WeaponName(table, 99, name, sizeof(name)) && strcmp(name, "W99") == 0,
+	           "WeaponName: an out-of-range number still gets a tag (W<number>)");
+
+	char icon[64];
+	CHECK_TRUE(WeaponEsp::WeaponIcon(table, 2, icon, sizeof(icon)) && strcmp(icon, "icons/iconw_machinegun") == 0,
+	           "WeaponIcon returns the table icon");
+	CHECK_TRUE(!WeaponEsp::WeaponIcon(table, 14, icon, sizeof(icon)), "WeaponIcon: unlisted -> none");
+	CHECK_TRUE(!WeaponEsp::WeaponIcon(table, 0, icon, sizeof(icon)), "WeaponIcon: WP_NONE -> none");
+
+	// the 3D model paths, exactly as bg_misc.c's world_model[0] spells them (the models/
+	// prefix included - the path RE_RegisterModel takes)
+	char model[128];
+	CHECK_TRUE(table.haveModel[1] && strcmp(table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
+	           "model 1 (weapons2/gauntlet)");
+	CHECK_TRUE(table.haveModel[4] && strcmp(table.weapons[4].model, "models/weapons2/grenadel/grenadel.md3") == 0,
+	           "model 4 (the grenadel directory, not 'grenade')");
+	CHECK_TRUE(table.haveModel[11] && strcmp(table.weapons[11].model, "models/weapons/nailgun/nailgun.md3") == 0,
+	           "model 11 (weapons/nailgun)");
+	CHECK_TRUE(table.haveModel[13] && strcmp(table.weapons[13].model, "models/weapons/vulcan/vulcan.md3") == 0,
+	           "model 13 (weapons/vulcan)");
+	CHECK_TRUE(WeaponEsp::WeaponModel(table, 2, model, sizeof(model)) &&
+	           strcmp(model, "models/weapons2/machinegun/machinegun.md3") == 0,
+	           "WeaponModel returns the table's path");
+	CHECK_TRUE(!WeaponEsp::WeaponModel(table, 0, model, sizeof(model)), "WeaponModel: WP_NONE -> none");
+	CHECK_TRUE(!WeaponEsp::WeaponModel(table, 14, model, sizeof(model)), "WeaponModel: unlisted -> none");
+}
+
+// -------------------------------------------------------------------------------------------
+// The shape scan, driven with a fabricated cgame data segment: the exact bytes a bytecode cgame
+// VM's hunk segment would hold - strings first, then bg_itemlist[] with 32-bit offset pointers,
+// exactly the way the qvm's .data section lays them out.
+// ------------------------------------------------------------------------------------------- //
+namespace
+{
+	// write a u32 field at an absolute offset of the segment
+	void PutU32(unsigned char* buf, size_t off, uint32_t v)
+	{
+		buf[off]     = (unsigned char)(v & 0xFF);
+		buf[off + 1] = (unsigned char)((v >> 8) & 0xFF);
+		buf[off + 2] = (unsigned char)((v >> 16) & 0xFF);
+		buf[off + 3] = (unsigned char)((v >> 24) & 0xFF);
+	}
+
+	// one gitem_t entry at `base` with the stock 1.32 offsets; NULL pointers stay 0
+	void PutItem132(unsigned char* buf, size_t base, uint32_t classname, uint32_t pickup,
+	               uint32_t icon, int quantity, int giType, int giTag, uint32_t precaches, uint32_t sounds)
+	{
+		PutU32(buf, base + 0,  classname);
+		PutU32(buf, base + 4,  0);               // pickup_sound
+		PutU32(buf, base + 8,  0);               // world_model[0..3]
+		PutU32(buf, base + 24, icon);
+		PutU32(buf, base + 28, pickup);
+		PutU32(buf, base + 32, (uint32_t)quantity);
+		PutU32(buf, base + 36, (uint32_t)giType);
+		PutU32(buf, base + 40, (uint32_t)giTag);
+		PutU32(buf, base + 44, precaches);
+		PutU32(buf, base + 48, sounds);
+	}
+
+	// the same entry with the ioquake3 1.36+ layout (stride 72)
+	void PutItemIoq(unsigned char* buf, size_t base, uint32_t classname, uint32_t pickup,
+	                uint32_t icon, int quantity, int giType, int giTag, uint32_t precaches, uint32_t sounds)
+	{
+		PutU32(buf, base + 0,  classname);
+		PutU32(buf, base + 4,  0);
+		PutU32(buf, base + 8,  0);
+		PutU32(buf, base + 24, icon);
+		PutU32(buf, base + 28, pickup);
+		PutU32(buf, base + 32, (uint32_t)quantity);
+		PutU32(buf, base + 36, (uint32_t)giType);
+		PutU32(buf, base + 40, (uint32_t)giTag);
+		PutU32(buf, base + 44, 0);               // giFlags
+		PutU32(buf, base + 48, 0);               // giFlags2
+		PutU32(buf, base + 52, 0);               // pickup_sound2
+		PutU32(buf, base + 56, precaches);
+		PutU32(buf, base + 60, sounds);
+		PutU32(buf, base + 64, 0);               // use_func
+		PutU32(buf, base + 68, 0);               // pmove_frame
+	}
+
+	// a NUL-terminated string at an offset; returns its offset (the pointer value to store).
+	// (strncpy is deliberately NOT used: it pads the rest of the field with NULs, which would
+	// clobber the next string in the segment.)
+	uint32_t PutStr(unsigned char* buf, size_t off, const char* s)
+	{
+		const size_t n = strlen(s);
+		memcpy(buf + off, s, n);
+		buf[off + n] = 0;
+		return (uint32_t)off;
+	}
+
+	// The fabricated segment: 1KB of non-zero garbage, the strings, the table, then more
+	// garbage that must not look like a second table. Returns the table's offset.
+	size_t BuildFakeCgameSegment(unsigned char* buf, size_t size, bool ioqLayout)
+	{
+		memset(buf, 0xA5, size);               // non-zero padding: never a zero prefilter
+		size_t off = 0x100;
+		const uint32_t sGauntletC    = PutStr(buf, off += 32, "weapon_gauntlet");
+		const uint32_t sGauntletP    = PutStr(buf, off += 32, "Gauntlet");
+		const uint32_t sGauntletI    = PutStr(buf, off += 48, "icons/iconw_gauntlet");
+		const uint32_t sMachineC     = PutStr(buf, off += 40, "weapon_machinegun");
+		const uint32_t sMachineP     = PutStr(buf, off += 32, "Machinegun");
+		const uint32_t sMachineI     = PutStr(buf, off += 48, "icons/iconw_machinegun");
+		const uint32_t sCustomC      = PutStr(buf, off += 32, "weapon_custom");
+		const uint32_t sCustomI      = PutStr(buf, off += 40, "icons/iconw_custom");
+		// a total-conversion weapon numbered past the stock range (MAX_WEAPONS 16): a TC that
+		// recompiles bg_public.h with more weapons still ships the number over the wire
+		const uint32_t sTcC          = PutStr(buf, off += 40, "weapon_tc_heavy");
+		const uint32_t sTcP          = PutStr(buf, off += 40, "TC Heavy Cannon");
+		const uint32_t sTcI          = PutStr(buf, off += 48, "icons/iconw_tc_heavy");
+		// the world_model[0] paths: the exact strings the cgame registers with RE_RegisterModel,
+		// which Model mode pushes into the scene (bg_misc.c spells them with the models/ prefix)
+		const uint32_t sGauntletM    = PutStr(buf, off += 48, "models/weapons2/gauntlet/gauntlet.md3");
+		const uint32_t sMachineM     = PutStr(buf, off += 48, "models/weapons2/machinegun/machinegun.md3");
+		const uint32_t sTcM          = PutStr(buf, off += 48, "models/weapons/tc_heavy/tc_heavy.md3");
+		const uint32_t sArmorC       = PutStr(buf, off += 40, "item_armor_shard");
+		const uint32_t sArmorP       = PutStr(buf, off += 40, "Armor Shard");
+		const uint32_t sEmpty        = PutStr(buf, off += 4,  "");
+		(void)sEmpty;
+
+		const size_t stride = ioqLayout ? 72 : 52;
+		const size_t table  = 0x400;
+		for (size_t i = 0; i < 16; ++i)
+		{
+			size_t e = table + i * stride;
+			// entries 5..15 are all-zero records: the region started as 0xA5 padding, and the
+			// run validation must see valid (empty) gitem_t entries, not garbage
+			memset(buf + e, 0, stride);
+			if (ioqLayout)
+			{
+				if (i == 0)
+				{
+					PutItemIoq(buf, e, 0, 0, 0, 0, 0, 0, sEmpty, sEmpty);
+				}
+				else if (i == 1)
+				{
+					PutItemIoq(buf, e, sArmorC, sArmorP, 0, 5, 2 /* IT_ARMOR */, 0, sEmpty, sEmpty);
+				}
+				else if (i == 2)
+				{
+					PutItemIoq(buf, e, sGauntletC, sGauntletP, sGauntletI, 0, 1 /* IT_WEAPON */, 1, sEmpty, sEmpty);
+				}
+				else if (i == 3)
+				{
+					PutItemIoq(buf, e, sMachineC, sMachineP, sMachineI, 0, 1, 2, sEmpty, sEmpty);
+				}
+				else if (i == 4)
+				{
+					// no pickup name: the classname must be used instead
+					PutItemIoq(buf, e, sCustomC, 0, sCustomI, 0, 1, 5, sEmpty, sEmpty);
+				}
+				else if (i == 5)
+				{
+					// a TC weapon numbered past the stock 16: the number must survive the scan
+					PutItemIoq(buf, e, sTcC, sTcP, sTcI, 0, 1, 19, sEmpty, sEmpty);
+				}
+				// entries 6..15: all-zero records (valid gitem_t shape, no strings)
+			}
+			else
+			{
+				if (i == 0)
+				{
+					PutItem132(buf, e, 0, 0, 0, 0, 0, 0, sEmpty, sEmpty);
+				}
+				else if (i == 1)
+				{
+					PutItem132(buf, e, sArmorC, sArmorP, 0, 5, 2 /* IT_ARMOR */, 0, sEmpty, sEmpty);
+				}
+				else if (i == 2)
+				{
+					PutItem132(buf, e, sGauntletC, sGauntletP, sGauntletI, 0, 1 /* IT_WEAPON */, 1, sEmpty, sEmpty);
+				}
+				else if (i == 3)
+				{
+					PutItem132(buf, e, sMachineC, sMachineP, sMachineI, 0, 1, 2, sEmpty, sEmpty);
+				}
+				else if (i == 4)
+				{
+					PutItem132(buf, e, sCustomC, 0, sCustomI, 0, 1, 5, sEmpty, sEmpty);
+				}
+				else if (i == 5)
+				{
+					PutItem132(buf, e, sTcC, sTcP, sTcI, 0, 1, 19, sEmpty, sEmpty);
+				}
+			}
+			// world_model[0]: present for the gauntlet, the machinegun and the TC weapon; the
+			// other entries (armor, the unnamed weapon, the empty records) stay NULL
+			if (i == 2)
+				PutU32(buf, e + 8, sGauntletM);
+			else if (i == 3)
+				PutU32(buf, e + 8, sMachineM);
+			else if (i == 5)
+				PutU32(buf, e + 8, sTcM);
+		}
+		// after the table: garbage whose ints fail the entry shape, so a scan that starts part
+		// way into the real table cannot "recover" and find a second one
+		for (size_t i = table + 16 * stride; i + 4 < size; i += 4)
+			PutU32(buf, i, 0xDEADBEEFu);
+		return table;
+	}
+}
+
+static void TestWeaponScannerStockLayout()
+{
+	Section("WeaponEsp::ScanRegion - finds a stock 1.32 bg_itemlist in a fake cgame segment");
+
+	enum { kSegSize = 4096 };
+	unsigned char buf[kSegSize];
+	const size_t tableOff = BuildFakeCgameSegment(buf, kSegSize, false);
+
+	// The pointer values are offsets into the segment - a bytecode VM's masked addressing. The
+	// mask must cover the whole segment, so size it as a power of two.
+	const uint32_t mask = kSegSize - 1;
+
+	WeaponEsp::ScanResult result;
+	CHECK_TRUE(WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, mask, false, result),
+	           "the table is found");
+	CHECK_TRUE(result.found, "found flag set");
+	CHECK_INT(result.stride, 52, "the stock gitem_t stride");
+	CHECK_INT((int)result.offset, (int)tableOff, "the table's offset in the segment");
+	CHECK_INT(result.itemCount, 5, "five entries carry strings (armor + four weapons)");
+
+	CHECK_TRUE(result.table.haveName[1] && strcmp(result.table.weapons[1].name, "Gauntlet") == 0,
+	           "weapon 1 name = pickup_name (Gauntlet)");
+	CHECK_TRUE(result.table.haveIcon[1] && strcmp(result.table.weapons[1].icon, "icons/iconw_gauntlet") == 0,
+	           "weapon 1 icon");
+	CHECK_TRUE(result.table.haveName[2] && strcmp(result.table.weapons[2].name, "Machinegun") == 0,
+	           "weapon 2 name (Machinegun)");
+	CHECK_TRUE(result.table.haveName[5] && strcmp(result.table.weapons[5].name, "weapon_custom") == 0,
+	           "weapon 5 falls back to the classname when the pickup name is missing");
+	CHECK_TRUE(result.table.haveIcon[5] && strcmp(result.table.weapons[5].icon, "icons/iconw_custom") == 0,
+	           "weapon 5 icon");
+	// a TC weapon numbered past the stock MAX_WEAPONS 16: the mod's own name and icon survive
+	CHECK_TRUE(result.table.haveName[19] && strcmp(result.table.weapons[19].name, "TC Heavy Cannon") == 0,
+	           "weapon 19 (past the stock range) keeps the mod's pickup name");
+	CHECK_TRUE(result.table.haveIcon[19] && strcmp(result.table.weapons[19].icon, "icons/iconw_tc_heavy") == 0,
+	           "weapon 19 keeps the mod's icon");
+	// the world_model[0] paths survive the scan (world_model is at +8, inside the shared head
+	// of both gitem_t layouts)
+	CHECK_TRUE(result.table.haveModel[1] &&
+	           strcmp(result.table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
+	           "weapon 1's model path survives the scan");
+	CHECK_TRUE(result.table.haveModel[2] &&
+	           strcmp(result.table.weapons[2].model, "models/weapons2/machinegun/machinegun.md3") == 0,
+	           "weapon 2's model path survives the scan");
+	CHECK_TRUE(result.table.haveModel[19] &&
+	           strcmp(result.table.weapons[19].model, "models/weapons/tc_heavy/tc_heavy.md3") == 0,
+	           "the TC weapon's model path survives the scan");
+	CHECK_TRUE(!result.table.haveModel[4], "a weapon with no model stays model-less");
+	CHECK_INT(result.table.weaponCount, 4, "four weapons in the table");
+
+	char name[64];
+	CHECK_TRUE(WeaponEsp::WeaponName(result.table, 19, name, sizeof(name)) && strcmp(name, "TC Heavy Cannon") == 0,
+	           "WeaponName resolves a TC weapon number through the scanned table");
+	CHECK_TRUE(WeaponEsp::WeaponName(result.table, 1, name, sizeof(name)) && strcmp(name, "Gauntlet") == 0,
+	           "WeaponName through the scanned table");
+}
+
+static void TestWeaponScannerIoqLayout()
+{
+	Section("WeaponEsp::ScanRegion - finds the ioquake3 72-byte gitem_t layout too");
+
+	enum { kSegSize = 4096 };
+	unsigned char buf[kSegSize];
+	const size_t tableOff = BuildFakeCgameSegment(buf, kSegSize, true);
+	// A nonzero giFlags (the ioq-only field) makes the 48-byte interpretation fail its string
+	// checks, so this really exercises the 72-byte path instead of the stock scan reading the
+	// shared head and winning first.
+	PutU32(buf, tableOff + 1 * 72 + 44, 1);
+
+	WeaponEsp::ScanResult result;
+	CHECK_TRUE(WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, kSegSize - 1, false, result),
+	           "the ioq-layout table is found");
+	CHECK_INT(result.stride, 72, "the ioq gitem_t stride");
+	CHECK_INT((int)result.offset, (int)tableOff, "the table's offset in the segment");
+	CHECK_TRUE(result.table.haveName[1] && strcmp(result.table.weapons[1].name, "Gauntlet") == 0,
+	           "weapon 1 name survives the wider layout");
+	CHECK_TRUE(result.table.haveName[5] && strcmp(result.table.weapons[5].name, "weapon_custom") == 0,
+	           "weapon 5 classname fallback survives the wider layout");
+	CHECK_TRUE(result.table.haveName[19] && strcmp(result.table.weapons[19].name, "TC Heavy Cannon") == 0,
+	           "a TC weapon number past the stock range survives the wider layout");
+	CHECK_TRUE(result.table.haveModel[1] &&
+	           strcmp(result.table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
+	           "the model path survives the wider layout");
+	CHECK_INT(result.table.weaponCount, 4, "four weapons in the ioq table");
+}
+
+static void TestWeaponScannerNegatives()
+{
+	Section("WeaponEsp::ScanRegion - rejects what is not a table");
+
+	enum { kSegSize = 4096 };
+	unsigned char buf[kSegSize];
+
+	// pure garbage: no entry-0 prefilter can pass, nothing is found
+	memset(buf, 0xA5, kSegSize);
+	WeaponEsp::ScanResult result;
+	CHECK_TRUE(!WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, kSegSize - 1, false, result),
+	           "garbage is not a table");
+
+	// a table whose later entries are corrupted: the run validation must reject it
+	const size_t tableOff = BuildFakeCgameSegment(buf, kSegSize, false);
+	PutU32(buf, tableOff + 6 * 52 + 36, 77 /* giType out of range */);
+	CHECK_TRUE(!WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, kSegSize - 1, false, result),
+	           "a corrupted run is not a table");
+
+	// a table with only two weapons: the acceptance threshold must reject it (drop two of the
+	// four weapon rows, leaving machinegun + the TC weapon)
+	BuildFakeCgameSegment(buf, kSegSize, false);
+	PutU32(buf, tableOff + 2 * 52 + 36, 0 /* entry 2: not a weapon anymore */);
+	PutU32(buf, tableOff + 4 * 52 + 36, 0 /* entry 4: not a weapon anymore */);
+	CHECK_TRUE(!WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, kSegSize - 1, false, result),
+	           "fewer than three weapons is not a table");
+
+	// a pointer that runs off the end of the segment (no NUL in sight)
+	BuildFakeCgameSegment(buf, kSegSize, false);
+	PutU32(buf, tableOff + 2 * 52 + 28, kSegSize - 8 /* pickup_name points at the last bytes */);
+	CHECK_TRUE(!WeaponEsp::ScanRegion(buf, kSegSize, (uintptr_t)buf, kSegSize - 1, false, result),
+	           "a dangling string pointer is not a table");
+}
+
+static void TestWeaponLegAnchor()
+{
+	Section("WeaponEsp::LegAnchor - mid-leg, below the feet the other ESPs anchor above");
+
+	NameEsp::PlayerTag tag;
+	memset(&tag, 0, sizeof(tag));
+	tag.lerpOrigin[0] = 100.0f;
+	tag.lerpOrigin[1] = -50.0f;
+	tag.lerpOrigin[2] = 10.0f;
+
+	float leg[3];
+	WeaponEsp::LegAnchor(tag, leg);
+	CHECK_TRUE(leg[0] == 100.0f && leg[1] == -50.0f, "x/y are the interpolated origin");
+	CHECK_TRUE(fabsf(leg[2] - (10.0f + q3::kWeaponEspLegHeight)) < 1e-6f,
+	           "z is the origin + the leg height (8 units above the feet)");
+
+	// and the head anchor the other ESPs use sits 28 units above it - a whole model between
+	// the two anchors, which is what keeps the two ESP stacks from ever sharing a screen row
+	CHECK_TRUE(fabsf((q3::kPlayerTagHeight + 10.0f) - (q3::kWeaponEspLegHeight + 10.0f) - 28.0f) < 1e-6f,
+	           "head anchor (+36) and leg anchor (+8) are 28 units apart");
+}
+
+static void TestWeaponFadeMatchesOtherEsp()
+{
+	Section("Weapon ESP fade - the same ramp as the distance / health ESPs");
+
+	float scale = 0.0f, alpha = 0.0f;
+	DistanceEsp::DistanceFade(100.0f, scale, alpha);
+	CHECK_TRUE(scale == 1.0f && alpha == 1.0f, "full size and opacity close in");
+	DistanceEsp::DistanceFade(2500.0f, scale, alpha);
+	CHECK_TRUE(scale == DistanceEsp::kMinScale && alpha == 0.0f, "gone at the fade end");
+	DistanceEsp::DistanceFade(1450.0f, scale, alpha);   // midpoint of 400..2500
+	CHECK_TRUE(alpha > 0.49f && alpha < 0.51f, "half faded at the midpoint");
+	CHECK_TRUE(scale > 0.67f && scale < 0.69f, "half scaled at the midpoint");
+}
+
+static void TestWeaponPlanModelEntity()
+{
+	Section("WeaponEsp::PlanModelEntity - the refEntity Model mode pushes");
+
+	NameEsp::PlayerTag tag;
+	memset(&tag, 0, sizeof(tag));
+	tag.lerpOrigin[0] = 100.0f;
+	tag.lerpOrigin[1] = -50.0f;
+	tag.lerpOrigin[2] = 10.0f;
+	tag.weapon = 4;
+
+	q3::refEntity_t re;
+
+	// guards: WP_NONE and an unregistered model are both rejected
+	CHECK_TRUE(!WeaponEsp::PlanModelEntity(tag, 1.0f, 0, re), "no registered handle -> nothing to push");
+	tag.weapon = 0;
+	CHECK_TRUE(!WeaponEsp::PlanModelEntity(tag, 1.0f, 7, re), "WP_NONE -> nothing to push");
+	tag.weapon = 4;
+
+	// unit scale, flat angles: RT_MODEL + the through-wall flags, the leg anchor, unit axes
+	memset(&re, 0xAA, sizeof(re));
+	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 1.0f, 7, re), "planned");
+	CHECK_INT(re.reType, q3::kRtModel, "RT_MODEL");
+	CHECK_INT(re.renderfx, q3::kRfDepthHack | q3::kRfMinlight,
+	          "RF_DEPTHHACK | RF_MINLIGHT (through the world, visible in the dark)");
+	CHECK_INT(re.hModel, 7, "the registered model handle");
+	CHECK_TRUE(re.origin[0] == 100.0f && re.origin[1] == -50.0f &&
+	           fabsf(re.origin[2] - (10.0f + q3::kWeaponEspLegHeight)) < 1e-6f,
+	          "origin is the leg anchor (lerpOrigin + 8)");
+	CHECK_INT((int)re.nonNormalizedAxes, 0, "unit axes: nonNormalizedAxes clear");
+	CHECK_INT(re.frame, 0, "frame 0 (the rest pose)");
+	CHECK_INT(re.customShader, 0, "the model's own shaders");
+	CHECK_TRUE(re.lightingOrigin[0] == 0.0f && re.lightingOrigin[1] == 0.0f &&
+	           re.lightingOrigin[2] == 0.0f && re.oldorigin[0] == 0.0f &&
+	           re.backlerp == 0.0f && re.skinNum == 0,
+	          "everything not set is zeroed");
+	// flat angles -> the identity matrix
+	const float identity[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	int axisOk = 1;
+	for (int i = 0; i < 3 && axisOk; ++i)
+		for (int j = 0; j < 3; ++j)
+			if (fabsf(re.axis[i][j] - identity[i][j]) > 1e-6f)
+				axisOk = 0;
+	CHECK_TRUE(axisOk, "unit axes are the identity matrix at flat angles");
+
+	// pitch / yaw / roll: the axis matrix must be the engine's own AnglesToAxis (q_math.c,
+	// linked in) multiplied by the scale
+	tag.lerpAngles[0] = 20.0f;
+	tag.lerpAngles[1] = 90.0f;
+	tag.lerpAngles[2] = 5.0f;
+	const float angles[3] = { 20.0f, 90.0f, 5.0f };
+	float expect[3][3];
+	AnglesToAxis(angles, expect);
+	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 2.0f, 9, re), "planned (rotated, scaled)");
+	int scaledOk = 1;
+	for (int i = 0; i < 3 && scaledOk; ++i)
+		for (int j = 0; j < 3; ++j)
+			if (fabsf(re.axis[i][j] - expect[i][j] * 2.0f) > 1e-4f)
+				scaledOk = 0;
+	CHECK_TRUE(scaledOk, "the axes are the engine's AnglesToAxis * scale");
+	CHECK_INT((int)re.nonNormalizedAxes, 1, "scaled axes: nonNormalizedAxes set");
+	CHECK_INT(re.hModel, 9, "the other handle");
+
+	// a non-positive scale is clamped to 1 (a garbage cfg value must not flip the model inside
+	// out or shrink it to nothing)
+	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 0.0f, 9, re), "planned (zero scale)");
+	int clampedOk = 1;
+	for (int i = 0; i < 3 && clampedOk; ++i)
+		for (int j = 0; j < 3; ++j)
+			if (fabsf(re.axis[i][j] - expect[i][j]) > 1e-4f)
+				clampedOk = 0;
+	CHECK_TRUE(clampedOk, "scale 0 is clamped to 1");
+	CHECK_INT((int)re.nonNormalizedAxes, 0, "clamped back to unit axes");
+}
+
+static void TestFindRefExport()
+{
+	Section("WeaponEsp::FindRefExportInBytes - locating refexport_t by shape");
+
+	const uintptr_t codeLow  = 0x10000000;
+	const uintptr_t codeHigh = 0x10100000;   // the main module's .text, fabricated
+
+	enum { kSize = 512 };
+	unsigned char region[kSize];
+	memset(region, 0xCC, sizeof(region));
+
+	// The engine holds one 28-slot run (refimport_t) and one 29-slot run (refexport_t) of
+	// code pointers. Fabricate both, the 28-slot one FIRST so the scanner must not stop at it.
+	const size_t riOff = 16;
+	const size_t reOff = riOff + 28 * 4 + 8;   // a few garbage bytes between the two
+	for (int k = 0; k < 28; ++k)
+		PutU32(region, riOff + (size_t)k * 4, (uint32_t)(0x10000100 + k * 4));
+	for (int k = 0; k < 29; ++k)
+		PutU32(region, reOff + (size_t)k * 4, (uint32_t)(0x10000800 + k * 4));
+
+	// The dispatcher's own bytes: CL_CgameSystemCalls calls the renderer through the table, so
+	// its code carries the re slot addresses as little-endian immediates. Fabricate 8 of the
+	// ~20 a real dispatcher has (>= kSlotHitsNeeded 6); the ri slots appear in none of them.
+	const int refSlots[8] = { 0, 2, 4, 6, 8, 10, 12, 14 };
+	unsigned char disp[128];
+	memset(disp, 0xCC, sizeof(disp));
+	for (int i = 0; i < 8; ++i)
+		PutU32(disp, (size_t)i * 4, (uint32_t)((uintptr_t)region + reOff + (size_t)refSlots[i] * 4));
+	const size_t dispLen = sizeof(disp);
+
+	uintptr_t base = 0xDEAD;
+	CHECK_TRUE(WeaponEsp::FindRefExportInBytes(region, sizeof(region), codeLow, codeHigh,
+	                                           disp, dispLen, &base),
+	          "a 29-slot run of code pointers is found");
+	CHECK_TRUE(base == (uintptr_t)region + reOff, "it is the refexport, not the 28-slot sibling");
+
+	// below the hit threshold (5 < kSlotHitsNeeded 6) nothing is accepted - the offset-shifted
+	// candidates inside the run score the shifted subset and must not carry the day
+	unsigned char disp5[128];
+	memset(disp5, 0xCC, sizeof(disp5));
+	for (int i = 0; i < 5; ++i)
+		PutU32(disp5, (size_t)i * 4, (uint32_t)((uintptr_t)region + reOff + (size_t)refSlots[i] * 4));
+	base = 0;
+	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(region, sizeof(region), codeLow, codeHigh,
+	                                            disp5, sizeof(disp5), &base),
+	          "fewer than 6 dispatcher references is not the table");
+
+	// the 28-slot sibling alone: there is no 29-consecutive run at all
+	unsigned char riOnly[256];
+	memset(riOnly, 0xCC, sizeof(riOnly));
+	for (int k = 0; k < 28; ++k)
+		PutU32(riOnly, 16 + (size_t)k * 4, (uint32_t)(0x10000100 + k * 4));
+	base = 0;
+	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(riOnly, sizeof(riOnly), codeLow, codeHigh,
+	                                            disp, dispLen, &base),
+	          "the 28-slot sibling alone is not a table");
+
+	// the same bytes outside the code range: a data pointer, not a function pointer
+	base = 0;
+	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(region, sizeof(region), 0x20000000, 0x20100000,
+	                                            disp, dispLen, &base),
+	          "pointers outside the code range do not form a table");
+}
+
 int main(void)
 {
 	printf("kutaQ3 hook tests - NAME ESP core (nameEspCore.cpp)\n");
@@ -1382,6 +1957,15 @@ int main(void)
 	TestWorldThenHudCapture();
 	TestHealthEsp();
 	TestDistanceEsp();
+	TestWeaponNumberGather();
+	TestWeaponStockTable();
+	TestWeaponScannerStockLayout();
+	TestWeaponScannerIoqLayout();
+	TestWeaponScannerNegatives();
+	TestWeaponLegAnchor();
+	TestWeaponFadeMatchesOtherEsp();
+	TestWeaponPlanModelEntity();
+	TestFindRefExport();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;
