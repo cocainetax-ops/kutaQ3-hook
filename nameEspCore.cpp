@@ -401,36 +401,6 @@ namespace
 			out[i] = prev->pos.trBase[i] + f * (cur.pos.trBase[i] - prev->pos.trBase[i]);
 	}
 
-	// The same lerp for the entity's angles (the cgame's CG_InterpolateEntityPosition lerps
-	// lerpOldAngles -> angles with the very same fraction): the WEAPON ESP's 3D Model mode uses
-	// the result to orient the weapon model the way the body it floats on is oriented. Component
-	// lerp, no shortest-arc wrap - that is what the cgame does with raw entity angles.
-	void InterpolatedAngles(const q3::entityState_t* prev, int prevTime,
-	                        const q3::entityState_t& cur, int curTime,
-	                        int renderTime, float* out)
-	{
-		out[0] = cur.angles[0];
-		out[1] = cur.angles[1];
-		out[2] = cur.angles[2];
-
-		if (!prev)
-			return;
-		if (((prev->eFlags ^ cur.eFlags) & q3::kEfTeleport) != 0)
-			return;
-
-		const int dt = curTime - prevTime;
-		if (dt <= 0)
-			return;
-
-		float f = (float)(renderTime - prevTime) / (float)dt;
-		if (f < 0.0f)
-			f = 0.0f;
-		else if (f > 1.0f)
-			f = 1.0f;
-
-		for (int i = 0; i < 3; ++i)
-			out[i] = prev->angles[i] + f * (cur.angles[i] - prev->angles[i]);
-	}
 }
 
 // =============================================================================================== //
@@ -681,18 +651,12 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 		float anchor[3];
 		InterpolatedOrigin(prev, s_prevSnapshot.serverTime, e, s_snapshot.serverTime,
 		                   renderTime, anchor);
-		float ang[3];
-		InterpolatedAngles(prev, s_prevSnapshot.serverTime, e, s_snapshot.serverTime,
-		                   renderTime, ang);
 		if (prev)
 			++s_frame.interpolatedPlayers;
 
 		tag.lerpOrigin[0] = anchor[0];
 		tag.lerpOrigin[1] = anchor[1];
 		tag.lerpOrigin[2] = anchor[2];
-		tag.lerpAngles[0] = ang[0];
-		tag.lerpAngles[1] = ang[1];
-		tag.lerpAngles[2] = ang[2];
 		tag.origin[0] = anchor[0];
 		tag.origin[1] = anchor[1];
 		tag.origin[2] = anchor[2] + q3::kPlayerTagHeight;   // just above the 32 unit player bbox

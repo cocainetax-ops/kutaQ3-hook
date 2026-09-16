@@ -37,9 +37,9 @@ namespace
 //                                +40 int  giTag  (for IT_WEAPON: the weapon_t number)
 //     +44 char *precaches        +48 char *sounds
 //
-//   world_model[0] (offset 8, both layouts) is the item's 3D model path - for a weapon, the
-//   same string the cgame hands to RE_RegisterModel (CG_RegisterItemVisuals), i.e. the model
-//   behind cg_weapons[W].weaponModel. The WEAPON ESP's 3D Model mode pushes it into the scene.
+//   world_model[4] (offset 8, both layouts) is validated like every other pointer field - a
+//   real table's entries point at model paths or NULL there - but never extracted: the ESP
+//   only displays the name and the icon.
 	//
 	//   ioquake3 1.36+ (stride 72) - the same head plus the fields the modern SDKs added:
 	//     +44 int giFlags  +48 int giFlags2  +52 char *pickup_sound2  +56 char *precaches
@@ -56,9 +56,6 @@ namespace
 	const size_t kPtrIoq[]   = { 0, 4, 8, 12, 16, 20, 24, 28, 52, 56, 60, 64, 68 };
 
 	const size_t kOffClassname   = 0;
-	const size_t kOffModel       = 8;    // world_model[0]: the item's 3D model path (""/NULL
-	                                    // for items without one); the cgame registers exactly
-	                                    // this string as the weapon's model
 	const size_t kOffIcon        = 24;
 	const size_t kOffPickupName  = 28;
 	const size_t kOffQuantity    = 32;
@@ -253,17 +250,11 @@ namespace
 			else if (ExtractString(region, size, dataBase, dataMask, native, e, kOffClassname,
 			                       out.weapons[weapon].name, sizeof(out.weapons[weapon].name)))
 				out.haveName[weapon] = true;   // no pickup name: the classname ("weapon_x") still names it
-			if (ExtractString(region, size, dataBase, dataMask, native, e, kOffIcon,
-			                   out.weapons[weapon].icon, sizeof(out.weapons[weapon].icon)))
-				out.haveIcon[weapon] = true;
-			// world_model[0] - the 3D model path (3D Model mode). NULL for items without one;
-			// a weapon whose entry has none simply cannot get a model, and that style falls
-			// back to the icon for it.
-			if (ExtractString(region, size, dataBase, dataMask, native, e, kOffModel,
-			                   out.weapons[weapon].model, sizeof(out.weapons[weapon].model)))
-				out.haveModel[weapon] = true;
+		if (ExtractString(region, size, dataBase, dataMask, native, e, kOffIcon,
+		                   out.weapons[weapon].icon, sizeof(out.weapons[weapon].icon)))
+			out.haveIcon[weapon] = true;
 
-			if (out.haveName[weapon] || out.haveIcon[weapon])
+		if (out.haveName[weapon] || out.haveIcon[weapon])
 				++weapons;
 		}
 
@@ -290,31 +281,30 @@ void WeaponEsp::StockTable(WeaponTable& table)
 {
 	memset(&table, 0, sizeof(table));
 
-	// Stock 1.32 / mission pack weapon_t -> (pickup name, icon shader, world model), exactly
-	// as bg_misc.c's bg_itemlist[] spells them. WP_NONE (0) deliberately has no entry: the
-	// game never shows a weapon there either.
+	// Stock 1.32 / mission pack weapon_t -> (pickup name, icon shader), exactly as
+	// bg_misc.c's bg_itemlist[] spells them. WP_NONE (0) deliberately has no entry: the game
+	// never shows a weapon there either.
 	struct
 	{
 		int   weapon;
 		const char* name;
 		const char* icon;
-		const char* model;
 	}
 	stock[] =
 	{
-		{ 1,  "Gauntlet",         "icons/iconw_gauntlet",     "models/weapons2/gauntlet/gauntlet.md3" },
-		{ 2,  "Machinegun",       "icons/iconw_machinegun",   "models/weapons2/machinegun/machinegun.md3" },
-		{ 3,  "Shotgun",          "icons/iconw_shotgun",      "models/weapons2/shotgun/shotgun.md3" },
-		{ 4,  "Grenade Launcher", "icons/iconw_grenade",      "models/weapons2/grenadel/grenadel.md3" },
-		{ 5,  "Rocket Launcher",  "icons/iconw_rocket",       "models/weapons2/rocketl/rocketl.md3" },
-		{ 6,  "Lightning Gun",    "icons/iconw_lightning",    "models/weapons2/lightning/lightning.md3" },
-		{ 7,  "Railgun",          "icons/iconw_railgun",      "models/weapons2/railgun/railgun.md3" },
-		{ 8,  "Plasma Gun",       "icons/iconw_plasma",       "models/weapons2/plasma/plasma.md3" },
-		{ 9,  "BFG10K",           "icons/iconw_bfg",          "models/weapons2/bfg/bfg.md3" },
-		{ 10, "Grappling Hook",   "icons/iconw_grapple",      "models/weapons2/grapple/grapple.md3" },
-		{ 11, "Nailgun",          "icons/iconw_nailgun",      "models/weapons/nailgun/nailgun.md3" },
-		{ 12, "Prox Launcher",    "icons/iconw_proxlauncher", "models/weapons/proxmine/proxmine.md3" },
-		{ 13, "Chaingun",         "icons/iconw_chaingun",     "models/weapons/vulcan/vulcan.md3" },
+		{ 1,  "Gauntlet",         "icons/iconw_gauntlet" },
+		{ 2,  "Machinegun",       "icons/iconw_machinegun" },
+		{ 3,  "Shotgun",          "icons/iconw_shotgun" },
+		{ 4,  "Grenade Launcher", "icons/iconw_grenade" },
+		{ 5,  "Rocket Launcher",  "icons/iconw_rocket" },
+		{ 6,  "Lightning Gun",    "icons/iconw_lightning" },
+		{ 7,  "Railgun",          "icons/iconw_railgun" },
+		{ 8,  "Plasma Gun",       "icons/iconw_plasma" },
+		{ 9,  "BFG10K",           "icons/iconw_bfg" },
+		{ 10, "Grappling Hook",   "icons/iconw_grapple" },
+		{ 11, "Nailgun",          "icons/iconw_nailgun" },
+		{ 12, "Prox Launcher",    "icons/iconw_proxlauncher" },
+		{ 13, "Chaingun",         "icons/iconw_chaingun" },
 	};
 
 	for (size_t i = 0; i < sizeof(stock) / sizeof(stock[0]); ++i)
@@ -323,11 +313,8 @@ void WeaponEsp::StockTable(WeaponTable& table)
 		        stock[i].name);
 		CopyStr(table.weapons[stock[i].weapon].icon, sizeof(table.weapons[stock[i].weapon].icon),
 		        stock[i].icon);
-		CopyStr(table.weapons[stock[i].weapon].model, sizeof(table.weapons[stock[i].weapon].model),
-		        stock[i].model);
-		table.haveName[stock[i].weapon]  = true;
-		table.haveIcon[stock[i].weapon]  = true;
-		table.haveModel[stock[i].weapon] = true;
+		table.haveName[stock[i].weapon] = true;
+		table.haveIcon[stock[i].weapon] = true;
 		++table.weaponCount;
 	}
 }
@@ -427,122 +414,4 @@ void WeaponEsp::LegAnchor(const NameEsp::PlayerTag& tag, float out[3])
 	out[0] = tag.lerpOrigin[0];
 	out[1] = tag.lerpOrigin[1];
 	out[2] = tag.lerpOrigin[2] + q3::kWeaponEspLegHeight;
-}
-
-bool WeaponEsp::WeaponModel(const WeaponTable& table, int weapon, char* out, size_t outSize)
-{
-	if (out && outSize)
-		out[0] = 0;
-	if (weapon < 0 || weapon >= kTableWeapons)
-		return false;
-	if (table.haveModel[weapon] && table.weapons[weapon].model[0])
-	{
-		strncpy(out, table.weapons[weapon].model, outSize - 1);
-		out[outSize - 1] = 0;
-		return true;
-	}
-	return false;
-}
-
-bool WeaponEsp::PlanModelEntity(const NameEsp::PlayerTag& tag, float scale, int handle,
-                                q3::refEntity_t& out)
-{
-	if (tag.weapon <= 0 || handle <= 0)
-		return false;                        // WP_NONE / no registered model: nothing to push
-	if (scale <= 0.0f)
-		scale = 1.0f;
-
-	memset(&out, 0, sizeof(out));
-	out.reType   = q3::kRtModel;
-	// RF_DEPTHHACK | RF_MINLIGHT: the exact flags the cgame's own through-wall effect tags
-	// (name tags) are drawn with - the model punches through the world like every other ESP,
-	// and stays visible in unlit corners (a pure world-lit model would vanish in the dark).
-	out.renderfx = q3::kRfDepthHack | q3::kRfMinlight;
-	out.hModel   = handle;
-
-	// The leg anchor - the same world point the Text / Icon styles are centred on.
-	float leg[3];
-	LegAnchor(tag, leg);
-	out.origin[0] = leg[0];
-	out.origin[1] = leg[1];
-	out.origin[2] = leg[2];
-
-	// The player's own orientation as the axis matrix, every axis multiplied by `scale`.
-	// nonNormalizedAxes = qtrue tells the renderer the axes carry scale instead of being
-	// unit vectors - that is the refEntity API's built-in "scale through the axis matrix".
-	q3::AnglesToAxis(tag.lerpAngles, out.axis);
-	out.nonNormalizedAxes = (scale != 1.0f) ? 1 : 0;
-	for (int i = 0; i < 3; ++i)
-	{
-		out.axis[i][0] *= scale;
-		out.axis[i][1] *= scale;
-		out.axis[i][2] *= scale;
-	}
-
-	// Static first frame: the weapon models' frame 0 is their rest pose; the cgame animates
-	// its own copies, ours is an indicator, not a held weapon.
-	out.frame    = 0;
-	out.oldframe = 0;
-	out.backlerp = 0.0f;
-	return true;
-}
-
-bool WeaponEsp::FindRefExportInBytes(const unsigned char* region, size_t size,
-                                     uintptr_t codeLow, uintptr_t codeHigh,
-                                     const unsigned char* dispCode, size_t dispLen,
-                                     uintptr_t* outBase)
-{
-	*outBase = 0;
-	if (!region || !dispCode || size < (size_t)kRefExportSlots * 4 || dispLen < 4)
-		return false;
-
-	const size_t maxOff = size - (size_t)kRefExportSlots * 4;
-	for (size_t off = 0; off <= maxOff; off += 4)
-	{
-		const uint32_t* run = (const uint32_t*)(region + off);
-
-		// kRefExportSlots consecutive pointers, every one inside the main module's code range
-		bool allInCode = true;
-		for (int k = 0; k < kRefExportSlots; ++k)
-		{
-			const uintptr_t p = (uintptr_t)run[k];
-			if (p < codeLow || p >= codeHigh)
-			{
-				allInCode = false;
-				break;
-			}
-		}
-		if (!allInCode)
-			continue;
-
-		// The candidate's slot addresses (base + 4k) must occur as little-endian immediates in
-		// the dispatcher's own code: CL_CgameSystemCalls calls the renderer through exactly
-		// this struct, so its machine code carries those addresses. The sibling refimport_t
-		// (the only other long run of engine-code pointers) is never referenced by the
-		// dispatcher, so it scores ~0 and is rejected.
-		const uintptr_t base = (uintptr_t)region + off;
-		int hits = 0;
-		for (int k = 0; k < kRefExportSlots; ++k)
-		{
-			const uint32_t want = (uint32_t)(base + (size_t)k * 4);
-			for (size_t d = 0; d + 4 <= dispLen; ++d)
-			{
-				if (dispCode[d + 0] == (unsigned char)(want & 0xff) &&
-				    dispCode[d + 1] == (unsigned char)((want >> 8) & 0xff) &&
-				    dispCode[d + 2] == (unsigned char)((want >> 16) & 0xff) &&
-				    dispCode[d + 3] == (unsigned char)((want >> 24) & 0xff))
-				{
-					++hits;
-					break;
-				}
-			}
-		}
-
-		if (hits >= kSlotHitsNeeded)
-		{
-			*outBase = base;
-			return true;
-		}
-	}
-	return false;
 }

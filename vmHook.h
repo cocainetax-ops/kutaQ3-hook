@@ -106,13 +106,6 @@ namespace Vm
 	// until the next level load.
 	const q3::refdef_t* Refdef();
 
-	// The cgame's refdef for a CG_R_RENDERSCENE trap that is IN FLIGHT right now: args is the
-	// dispatcher's argument array (args[1] = the cgame's refdef, a VM pointer resolved like
-	// every other capture). Used by the WEAPON ESP's 3D Model mode, which must see the view the
-	// scene is about to be rendered with - the frame's, not the last finished frame's - before
-	// the trap runs. false when no cgame VM is known or the pointer does not resolve.
-	bool TrapRefdef(const int* args, q3::refdef_t* out);
-
 	// The cgame's writable data range, for feature scans that look a cgame global up by shape
 	// (the WEAPON ESP's bg_itemlist scan, weaponEsp.h): a bytecode VM means its hunk segment
 	// (dataBase .. dataBase + dataMask), a native cgame its DLL image. false when no cgame VM
@@ -123,11 +116,6 @@ namespace Vm
 	// instance it was taken under: a level change reuses the instance, a reconnect or a mod
 	// change does not - callers compare these fields to decide when to rescan.
 	bool VmIdentity(uintptr_t& dataBase, uint32_t& dataMask, uintptr_t& dllHandle);
-
-	// The address of the hooked cgame syscall dispatcher (CL_CgameSystemCalls in quake3.exe),
-	// or false when no cgame VM is known. The WEAPON ESP's refexport_t scan disambiguates its
-	// candidates with the dispatcher's own bytes, which carry the table's slot addresses.
-	bool DispatcherAddress(uintptr_t& out);
 
 	// The serverTime the frame being drawn belongs to: refdef_t::time, unless that refdef is
 	// stale (older than the newest snapshot by more than NameEsp::kRefdefStaleMs - a frozen

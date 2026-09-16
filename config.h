@@ -41,10 +41,7 @@ namespace Config
 		bool weaponEsp;      // WEAPON ESP (weaponEsp.h) - the player's current weapon at the
 		                     // leg position, through walls
 		int  weaponEspStyle; // WEAPON ESP style: 0 = Text (the weapon's name, GL::Font),
-		                    // 1 = Icon (the cgame's item icon for the weapon),
-		                    // 2 = Model (the weapon's actual 3D model, in the world)
-		float weaponEspModelScale; // WEAPON ESP, Model style: uniform scale of the weapon model
-		                          // (1.0 = the model's own size, 0.25..4.0)
+		                    // 1 = Icon (the cgame's item icon for the weapon)
 		bool logShaders;
 
 		// optional one-shot fallback if an older kutaQ3.cfg had a [Menu] section

@@ -433,9 +433,6 @@ namespace
 		NameEsp::Reset();
 		NameEsp::ResetDrawState();      // the GL half's per-client state goes with the level too
 		WeaponEsp::ResetDrawState();    // ... and the weapon ESP's fade-in ramps with it
-		WeaponEsp::ResetModelHandles(); // ... and the pushed model handles: the renderer
-		                                // re-registers all media at a level change, so a
-		                                // handle from the old level is dead
 		// (the weapon TABLE itself survives: it is compiled into the cgame, not per-level)
 	}
 
@@ -611,13 +608,6 @@ namespace
 
 	int Q3SDK_CDECL newSystemCall(int* args)
 	{
-		// The WEAPON ESP's 3D Model mode pushes this frame's weapon models into the scene
-		// BEFORE the trap runs - the trap's handler is RE_RenderScene, and the models have to
-		// be in the scene by the time it renders. Only that one trap number acts before the
-		// original; every other capture below stays a copy-after-the-fact.
-		if (args && args[0] == q3::CG_R_RENDERSCENE)
-			WeaponEsp::OnWorldRenderScene(args);
-
 		// The engine has finished writing into the cgame's buffers by the time the original
 		// returns, so the copy happens afterwards. Re-entrancy is impossible: everything below
 		// touches only this DLL's own statics.
@@ -972,23 +962,6 @@ const q3::refdef_t* Vm::Refdef()
 	return s_haveRefdef ? &s_refdef : NULL;
 }
 
-bool Vm::TrapRefdef(const int* args, q3::refdef_t* out)
-{
-	// args is the live dispatcher array of an in-flight CG_R_RENDERSCENE: args[1] is the
-	// cgame's refdef, a VM pointer exactly like the one Observe() copies after the fact.
-	// The caller wants it BEFORE the trap runs (the models go in ahead of R_RenderScene),
-	// so this is the same resolution spelled for the pre-call moment.
-	if (!args || !out)
-		return false;
-	if (args[0] != q3::CG_R_RENDERSCENE)
-		return false;
-	const uintptr_t src = Resolve(args[1]);
-	if (!src)
-		return false;
-	memcpy(out, (const void*)src, sizeof(*out));
-	return true;
-}
-
 bool Vm::DataSegment(uintptr_t& low, uintptr_t& high)
 {
 	low = high = 0;
@@ -1016,12 +989,6 @@ bool Vm::VmIdentity(uintptr_t& dataBase, uint32_t& dataMask, uintptr_t& dllHandl
 	dataMask  = s_vm->dataMask;
 	dllHandle = s_vm->dllHandle;
 	return true;
-}
-
-bool Vm::DispatcherAddress(uintptr_t& out)
-{
-	out = s_vm ? (uintptr_t)s_vm->systemCall : 0;
-	return s_vm != NULL;
 }
 
 int Vm::ServerTime()
