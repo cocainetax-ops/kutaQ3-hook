@@ -259,7 +259,7 @@ skipped, and `Gather()` skips a player with no name rather than guessing one.
    engine: ioquake3 appends a runtime `"cs"` at the end of the pool whatever its index (retail 1.32
    rebuilds the whole pool in index order instead, `CL_ConfigstringModified`). The checks are now
    order independent - every set offset lands inside the pool, no two set indices share one, every
-   set string is terminated and control-character free, `CS_SERVERINFO` carries `\mapname\`, and at
+   set string is terminated and control-character free, `CS_SERVERINFO` carries `\\mapname\\`, and at
    least one `CS_PLAYERS` slot holds an infostring - so the fallback recognises a live copy whenever
    it runs instead of only in the first seconds after a parse.
 4. **A fresh join always missed the one trap that mattered, and the first `cs` was your first
@@ -373,6 +373,219 @@ headers in `SDK/` stay out of the build - see `SDK/README.md`), and
 `SDK/code/client/cl_sdkmirror.cpp` asserts every mirrored size, offset and syscall number against
 the real 1.32b headers.
 
+## WEAPON ESP and the item table scan
+
+Every other player's **current weapon at their leg position**, through walls, in one of three
+styles selectable from the VISUALS tab (`Weapon ESP (OpenGL)` checkbox + Text / Icon / Model
+radio, `WeaponEspEnabled` / `WeaponEspStyle` / `WeaponEspModelScale` in `kutaQ3.cfg`):
+
+- **Text** - the weapon's name string in the `GL::Font` display-list faces (`glText.h`) the other
+  ESPs use, centred on the leg anchor, saturated orange (`255,140,0`) so it is readable on any
+  background and distinct from the team colours, with the same 1px black drop shadow as the name
+  ESP.
+
+- **Icon** - the weapon's **item icon**: the cgame's own icon shader for that weapon (the `icon`
+  field of the item table entry), loaded out of the game's pak files and drawn as a quad centred
+  on the leg anchor. The quad is projected from the 3D anchor point, so it sits on the player's
+  legs in world space and follows them exactly like the other ESP overlays. Size `kIconBaseSizePx`
+  36px at full scale, clamped to 8px minimum, with a 1px black outline. A missing icon is drawn as
+  a neutral chip (`90,220,235`) so the position is still marked, counted as `iconsMissing` in the
+  menu.
+
+- **3D Model** - the weapon's **actual 3D world model** (`world_model[0]` field of the same item
+  table entry - the exact path the cgame hands to `RE_RegisterModel` for the weapon), rendered
+  **IN the game's scene, not in the 2D overlay**: a `refEntity_t` is pushed through the engine's
+  own renderer (`refexport_t::AddRefEntityToScene`) during the cgame's own `CG_R_RENDERSCENE` trap,
+  right before `R_RenderScene` runs, so it renders in the same frame at the player's exact
+  interpolated position (the same lerp the cgame applies to the body). The model is oriented with
+  the player's own interpolated angles and scaled through its axis matrix (`nonNormalizedAxes` -
+  the "axis matrix scale" of the `refEntity` API), and carries `RF_DEPTHHACK | RF_MINLIGHT` - the
+  same flags the cgame's own through-wall name tags use - so it draws through walls like every
+  other ESP and stays visible in unlit corners. Distance scales it the way the 3D world does (no
+  2D ramp); the menu's **model scale** slider multiplies the axis matrix (`0.25..4.0`, `1.0` = the
+  model's own size). A weapon whose model cannot be registered (no `world_model` in the table,
+  path not in the paks, or the renderer's export table cannot be located) falls back to the Icon
+  style for that player, so the ESP is never blind in Model mode, counted as `modelsMissing`.
+
+The tag is centred on `lerpOrigin + kWeaponEspLegHeight` (`q3sdk.h`, `8.0f`): mid-leg, knee line -
+the standing bbox spans origin z `-24..+32` (`MINS_Z` / `bg_pmove.c`), so a whole model height sits
+between the weapon tag and the head-anchored stack (name / distance / health). That is why this
+ESP never overlaps the others for the same player. Projection, viewport offset handling, edge
+clamping and dimming are the same as the other ESPs (`NameEsp::ProjectWorldToScreen`).
+
+### Where the data comes from
+
+The **weapon NUMBER** is the stock networked field: the `ET_PLAYER` entity's
+`entityState_t::weapon` (`BG_PlayerStateToEntityState` copies `ps->weapon` into it, `bg_misc.c`).
+That is the very index the cgame uses to index its own native `cg_weapons[]` array - so whatever a
+mod numbers its weapons as, the ESP follows it; nothing about the ESP's weapon handling is
+vanilla-specific. `WP_NONE` (`0`) draws nothing, the same as the game.
+
+The **weapon NAME, ICON and MODEL PATH** come from the cgame's own native item table:
+`bg_itemlist[]`, the `gitem_t[]` global compiled into the cgame (`bg_misc.c`). That table is what
+the cgame's `cg_weapons[]` is built from - `cg_weapons[W].item` is the `gitem_t` entry of the
+weapon item, its icon (`cg_items[].icon`) is registered from the entry's `icon` field, and its
+world model from `world_model[0]`. So the ESP reads the same names, classes, icon shader paths and
+model paths the cgame itself uses, and a total conversion with its own weapon list (renamed,
+renumbered or new weapons) is picked up as-is.
+
+`weaponEspCore.cpp` (the portable half, no `<windows.h>`, no GL) shape-scans the cgame's data
+segment for `bg_itemlist[]` and extracts, per weapon number, the `pickup_name` (falling back to
+`classname`) and the icon shader name and `world_model[0]`. The scan is:
+
+- **Two layouts accepted**: stock 1.32 `gitem_t` stride 52 and ioquake3 1.36+ stride 72 (the modern
+  SDKs added `giFlags`, `giFlags2`, `pickup_sound2`, `use_func`, `pmove_frame`). Field offsets are
+  `classname +0`, `world_model[0] +8`, `icon +24`, `pickup_name +28`, `quantity +32`,
+  `giType +36`, `giTag +40` - the same in both layouts.
+
+- **Entry 0 prefilter**: `bg_itemlist[0]` is the null entry ("leave index 0 alone" in `bg_misc.c`):
+  seven leading string pointers + `pickup_name` all NULL, `quantity`/`giType`/`giTag` all zero.
+  That is 28 bytes of zeros - the cheapest test that rejects almost every position at once.
+
+- **Pointer / string resolution**: `VM_ArgPtr` spelled out. A bytecode cgame stores its globals as
+  masked offsets into its hunk segment (`dataBase + (vmAddr & dataMask)`), a native DLL stores host
+  pointers, the tests pass a plain host region with `native=true`. Every non-NULL pointer must
+  land inside the scanned region and point at a NUL-terminated visible string (32..255, at most
+  `kMaxScanString` 64 bytes).
+
+- **Full run validation**: `kRunLength` 16 consecutive entries. Every pointer field must be a
+  valid string or NULL, `quantity` in `±100000`, `giType` `0..9` (`IT_BAD..IT_TEAM` plus
+  `IT_POWERUP2`), `giTag` `0..255`. Acceptance: at least 4 named entries and 3 weapons (`IT_WEAPON`
+  entries carry the `weapon_t` number in `giTag`).
+
+When the scan finds nothing (a cgame built against a different `bg_public.h`), the ESP falls back
+to the **built-in stock 1.32 table** (`WeaponEsp::StockTable`), so the feature still works on
+vanilla servers. The fallback lists 13 weapons exactly as `bg_misc.c` spells them:
+
+`1 Gauntlet` (`icons/iconw_gauntlet`, `models/weapons2/gauntlet/gauntlet.md3`),
+`2 Machinegun`, `3 Shotgun`, `4 Grenade Launcher`, `5 Rocket Launcher`, `6 Lightning Gun`,
+`7 Railgun`, `8 Plasma Gun`, `9 BFG10K`, `10 Grappling Hook`, `11 Nailgun`, `12 Prox Launcher`,
+`13 Chaingun` (mission pack). Table slots run to `kTableWeapons` 32 to cover total conversions that
+recompile `bg_public.h` with a larger `MAX_WEAPONS`; an out-of-range weapon still gets a `W<number>`
+tag.
+
+The scan runs **once per cgame VM instance** (the first frame the feature draws), walking only
+committed, readable, writable regions inside the cgame's own range (its hunk segment for a bytecode
+VM, its image for a native DLL) via `VirtualQuery`. Cost is a few milliseconds. A level change
+reuses the same instance (same table), a reconnect or mod change gets a new one and triggers a
+rescan. The identity check is `Vm::VmIdentity` (`dataBase` / `dataMask` / `dllHandle`), the same
+one the configstrings pointer uses. The menu reports `weapon table: cgame native table (scanned)`
+vs `built-in stock 1.32 names` and the weapon count.
+
+### Icon textures - pak (ZIP) + TGA loading
+
+The icon shader name (`icons/iconw_gauntlet`) maps to a `.tga` in the game's pak files
+(`baseq3/pak0.pk3` or the mod's paks). `weaponEsp.cpp` (the Win32 half) opens those paks - they are
+plain ZIP archives - decodes the TGA and uploads it as a GL texture on the current context, self
+contained, no renderer-internal memory is touched.
+
+- **Finding the file**: every subdirectory of the game dir is a candidate mod dir; mod paks are
+  tried first (they override `baseq3`, same load order the engine's `fs` uses), then `baseq3` paks
+  highest number first (engine loads `pakN` ascending, so highest wins), then loose `.tga` files.
+  Exact name match wins, else first case-insensitive - like the engine's search.
+
+- **ZIP parsing**: reads the end-of-central-directory at the tail, then the central directory
+  (rejected if >4 MiB), finds the entry, reads its local header and data. Handles stored (method 0)
+  and deflated (method 8). Deflate is inflated via `RtlDecompressBuffer` from `ntdll.dll`
+  (`CompressFormatNative` = zlib stream) - no import needed, no third-party zlib.
+
+- **TGA decode**: accepts 8/16/24/32bpp, top-down or bottom-up. 32bpp Q3 TGA writers differ on
+  channel order - classic Q3 convention is ARGB, some mod tools write RGBA. Detected
+  statistically: on an icon most pixels are transparent, so which byte is 0 for the majority
+  decides. Output is always top-down RGBA for `glTexImage2D`.
+
+- **Upload & cache**: `glGenTextures` / `glTexImage2D` inside `KUTAQ3_LEGACY_GL_STATE_GUARD()`.
+  `IconTex` slots cache `icon` name, `tex` id, `w`/`h`, `valid`, `triedGen` (table generation last
+  loaded under). A failed lookup is remembered (`triedGen = s_tableGen`) so a missing file does not
+  cost a directory walk and pak open every frame. A new table or a new GL context (`wglGetCurrentDC`
+  change = `vid_restart`) earns a retry - the game destroys the context, not the ids, so every id
+  is stale and `valid` is cleared.
+
+A missing texture draws the neutral chip at the leg position and increments `iconsMissing`.
+
+### Model mode - the engine's renderer through refexport_t
+
+The model has to be **inside** the rendered frame, so it cannot be drawn by the `SwapBuffers`
+overlay (that runs after `R_RenderScene`, one frame late, and would depth-test against the
+just-rendered world). It is pushed instead while the cgame's own `CG_R_RENDERSCENE` trap is in
+flight - the one trap that happens right before `R_RenderScene` on the engine's side - and it goes
+through the **ENGINE's renderer**, not our own GL calls.
+
+`refexport_t` (`re`) - `tr_public.h`, a global in `quake3.exe` - is the struct of 29 renderer
+function pointers the cgame's traps call through (`RE_RegisterModel`, `RE_AddRefEntityToScene`,
+...). It is located with `FindRefExportInBytes()`: a run of 29 consecutive main-module code
+pointers, accepted only when the cgame's own syscall dispatcher (already in hand: `vm->systemCall`)
+references the candidate's slots by address. The dispatcher's machine code calls
+`re.RegisterModel` / `re.RenderScene` / ... through the struct, so its bytes carry the slot
+addresses as little-endian immediates. The engine has one other such run - the sibling
+`refimport_t` (`ri`, 28 slots) - which is never referenced by the dispatcher, so it scores ~0 and
+is rejected. Threshold `kSlotHitsNeeded` 6 (it actually calls ~20). No engine bytes are written,
+no trap is synthesised, nothing calls into the cgame.
+
+Once located:
+
+- `EnsureModelHandles()` (called from `Draw()` at frame end, when the renderer is idle) lazily
+  registers the current table's weapon models with `RE_RegisterModel` (slot `kSlotRegisterModel` 2)
+  via the located table. `ModelRec` caches `path`, `handle` (qhandle, 0 = none), `triedGen`. A
+  handle is only pushed when taken under the **current** table generation - a dead handle is an
+  out-of-bounds model index inside the renderer. Handles die when the renderer tears down its media
+  (`RE_BeginRegistration` at level change, `vid_restart` destroying the GL context), detected via
+  the tracked `HDC` (`wglGetCurrentDC`) same as icon textures; `ResetModelHandles()` clears them on
+  the VM hook's level-boundary drop.
+
+- `OnWorldRenderScene(const int* args)` is called from the VM dispatcher detour **while** a
+  `CG_R_RENDERSCENE` trap is in flight, **BEFORE** the trap runs (i.e. before `R_RenderScene`):
+  reads the `refdef_t` the scene is about to be rendered with (world scenes only,
+  `RDF_NOWORLDMODEL` skipped), gathers players at `fd.time` (`cg.time`) with the same lerp the
+  cgame applies to bodies (`NameEsp::Gather(fd.time, Vm::Syscall(), &fd)`), so the model sits on
+  the body instead of trailing a frame behind. For each player with a live model handle,
+  `PlanModelEntity()` builds a `refEntity_t`: `RT_MODEL`, `RF_DEPTHHACK|RF_MINLIGHT`, origin = leg
+  anchor, axis = player's own `lerpAngles` via `AnglesToAxis`, every axis multiplied by `scale`
+  (`nonNormalizedAxes` set - the `refEntity` API's built-in "scale through the axis matrix"), frame 0.
+  Pushed with `RE_AddRefEntityToScene` (slot `kSlotAddRefEntityToScene` 10). At most once per frame
+  (`s_injectedThisFrame`), with SEH `__try/__except` around both renderer calls - a fault clears
+  the located table and allows a throttled rescan (2s).
+
+The menu line under Model style reports `renderer table: not found (Model mode falls back to the
+icon)` or `renderer table found - N model(s) registered` (`ModelStatus()`), plus per-frame
+`N weapon models in the scene` and `N tags have no 3D model (icon shown instead)`.
+
+### Distance-based scale & alpha fading, and the fade-in ramp
+
+Instead of drawing everyone's weapon at full size and opacity, the tag scales down and fades out
+with range, driven by `|cg.refdef.vieworg - cent->lerpOrigin|` - the view origin the frame was
+rendered with and the player's interpolated origin, already computed per tag by `NameEsp::Gather()`
+as `tag.distance`. It uses the same ramp as the DISTANCE and HEALTH ESPs
+(`DistanceEsp::DistanceFade`: full inside `kFadeStartDist`, scale `kMinScale` / alpha 0 at
+`kFadeEndDist`), so all the overlays agree about what "far" looks like.
+
+- **Text**: `GL::Font` bakes ONE face into its display list and `glBitmap` glyphs render in window
+  pixels, so "scaling" means picking the pre-baked face nearest `FONT_HEIGHT * scale`. Buckets
+  `14,12,10,8,6,5` (`5px == 14 * 0.357 ~= kMinScale`), rebuilt after a GL context change like the
+  other fonts. `BucketForScale()`.
+
+- **Icon**: size `kIconBaseSizePx 36 * scale`, clamped to 8px, whole quad clamped inside the overlay
+  so edge tags stay visible.
+
+- **Model**: a real 3D object shrinks with distance on its own, so the 2D ramp does not apply -
+  the overlay draws nothing for a player whose model is handled by the scene; the tag is "up" when
+  the scene has (or had, this frame) its model.
+
+Per-client draw state - the fade-in ramp - same shape and intent as the other ESPs: tags are rebuilt
+every frame; what survives is how far a tag has ramped up, keyed by client number (`TagState`
+`clientNum`, `alpha` 0..1, `steppedAt`), dropped with the level (`ResetDrawState()`, called from
+`vmHook.cpp`'s level-boundary drop). A tag that just entered the PVS ramps up over `kFadeInMs`
+220ms rather than popping, `ClockStepMs` clamped `kMinClockStepMs` 16ms / `kMaxClockStepMs` 250ms
+so a hitch is not slow-motion and a stalled clock does not stall the ramp. PVS flicker keeps its
+alpha instead of blinking. Off-screen tags are dimmed 55% like the other ESPs.
+
+Split like the other ESPs: the table maths (scanning, name/icon resolution, anchor,
+`PlanModelEntity`, `FindRefExportInBytes`) lives in `weaponEspCore.cpp`, which needs no
+`<windows.h>` and no GL, so `tests/` can compile and run it against a fabricated cgame data segment.
+`weaponEsp.cpp` holds the GL / pak / texture / renderer half. The test build compiles `Draw()`
+against the stock table with no icons available, so the drawing path - projection, anchor, stacking,
+fade, stats - is exercised off Windows exactly like the other ESPs.
+
 ## Features
 
 - Chams (wallhack) on player models - FFA, red team and blue team models
@@ -410,6 +623,41 @@ the real 1.32b headers.
   (health/regen packs, armor) are not modelled; the next hit re-measures. Bars are thinner and
   shorter than the projected player model, fade and shrink with distance, and sit on the last
   row of the ESP stack - underneath the name and / or the distance when those are on.
+- **WEAPON ESP** (`weaponEsp.h` / `weaponEspCore.cpp` / `weaponEsp.cpp`) - every other player's
+  current weapon at their **leg position** (not the head), through walls, the only overlay
+  anchored **below** the model (`kWeaponEspLegHeight` 8.0f in `q3sdk.h`) so it never collides
+  with the head-anchored name / distance / health stack. Toggled with the **Weapon ESP
+  (OpenGL)** tickbox in the VISUALS tab (`WeaponEspEnabled` in `kutaQ3.cfg`). Three styles
+  (`WeaponEspStyle`):
+
+  - **Text** - the weapon's name string, in the `GL::Font` face, centred on the leg anchor,
+    saturated orange (`255,140,0`) distinct from team colours, 1px black drop shadow. The name
+    comes from the cgame's own `bg_itemlist[]` (`pickup_name` / `classname`), so a total
+    conversion's own weapon list is displayed as-is; built-in stock 1.32 names (`Gauntlet` ..
+    `Chaingun`) when no native table is found. `W<number>` for an out-of-range mod weapon,
+    nothing for `WP_NONE`.
+
+  - **Icon** - the weapon's item icon: the cgame's own icon shader for that weapon (`icon`
+    field of `gitem_t`), loaded out of the game's pak files (plain ZIPs, stored + deflated via
+    `RtlDecompressBuffer`, TGA 8/16/24/32bpp ARGB/RGBA auto-detected) and drawn as a 36px quad
+    centred on the leg anchor, projected from the 3D anchor point. 1px black outline, neutral
+    chip fallback when the texture is not in the paks (`iconsMissing` counter).
+
+  - **3D Model** - the weapon's actual 3D world model (`world_model[0]` of the same item table
+    entry - the path the cgame registers as `cg_weapons[W].weaponModel`), rendered **in the
+    game's scene** through the engine's own renderer (`refexport_t` global in `quake3.exe`,
+    located by shape: 29 consecutive main-module code pointers referenced by the cgame's syscall
+    dispatcher). Pushed via `RE_AddRefEntityToScene` during the `CG_R_RENDERSCENE` trap, at the
+    player's exact interpolated position (`fd.time`), oriented with the player's `lerpAngles`,
+    scaled through the axis matrix (`nonNormalizedAxes`, slider `WeaponEspModelScale` `0.25..4.0`),
+    with `RF_DEPTHHACK|RF_MINLIGHT` so it draws through walls and stays visible in the dark.
+    Falls back to Icon when no model is registered (`modelsMissing` counter). Handles cached per
+    table generation, invalidated on level change / `vid_restart`.
+
+  Scales down and fades out with `|vieworg - lerpOrigin|` like Distance/Health (font buckets
+  `14,12,10,8,6,5` for Text, `36*scale` for Icon, real 3D distance for Model), fades in over
+  220ms per client, edge-clamped and dimmed, `WP_NONE` draws nothing.
+
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
@@ -427,7 +675,7 @@ the real 1.32b headers.
 > The shader-detection code relies on inline x86 assembly, so only 32-bit builds are supported.
 > `detours.lib` in the repository root is the x86 Detours 3.0 library.
 
-The output DLL is `Release\kutaQ3.dll`.
+The output DLL is `Release\\kutaQ3.dll`.
 
 ## Usage
 
@@ -451,6 +699,9 @@ NameEspEnabled=1      ; 1 = player names on screen (reads the cgame VM directly)
 DistanceEspEnabled=1  ; 1 = distance in metres above players (scaled + faded with range)
 HealthEspEnabled=1    ; 1 = health bars above players (estimated: last EV_PAIN sample, hatched until first hit)
 HealthEspSpawnHealth=100 ; 1..200 = HP an unmeasured player (no hit since spawn) is drawn at
+WeaponEspEnabled=1    ; 1 = the player's current weapon at their leg position (through the cgame's own weapon table)
+WeaponEspStyle=0      ; 0 = text (weapon name), 1 = icon (the cgame's item icon), 2 = model (the weapon's 3D model in the world)
+WeaponEspModelScale=1.0 ; 0.25..4.0, Model style only: uniform scale of the weapon model
 LogShaders=1
 ```
 
@@ -472,9 +723,9 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, WEAPON ESP's `bg_itemlist[]` shape scan (stock 52-byte and ioq3 72-byte layouts, entry-0 prefilter, pointer/string validation, weapon extraction with `pickup_name` fallback), `WeaponName` / `WeaponIcon` / `WeaponModel` resolution, `LegAnchor` (mid-leg `kWeaponEspLegHeight`), `PlanModelEntity` (RT_MODEL, RF_DEPTHHACK\|RF_MINLIGHT, axis-scaled), `FindRefExportInBytes` (29-slot run + dispatcher reference check), and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
 | `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
-| `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `healthEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the three ESP overlays stacking in their own rows, and the distance text's scale + fade with range. |
+| `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `healthEsp.cpp` + `weaponEsp.cpp` + `weaponEspCore.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the three ESP overlays stacking in their own rows, the distance text's scale + fade with range, and WEAPON ESP's text at the leg anchor (orange, not team colour), icon chips when no texture exists, stacking below the head-anchored stack, scale + fade with range, and Model mode falling back to the icon when no model is registered (off Windows). |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.
