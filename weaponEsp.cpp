@@ -829,7 +829,9 @@ namespace
 		GLuint tex = 0;
 		{
 			KUTAQ3_LEGACY_GL_STATE_GUARD();
-			tex = glGenTextures(1);
+			// Real <GL/gl.h> signature: void glGenTextures(GLsizei, GLuint*) - the id comes out
+			// through the pointer, 0 on failure (the stub in tests/stub/gl/GL.h mirrors this).
+			glGenTextures(1, &tex);
 			if (tex)
 			{
 				glBindTexture(GL_TEXTURE_2D, tex);
