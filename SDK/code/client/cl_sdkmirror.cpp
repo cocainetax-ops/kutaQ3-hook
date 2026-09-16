@@ -132,26 +132,6 @@ CHECK_OFFSET(refdef_t, rdflags);
 CHECK_OFFSET(refdef_t, areamask);
 CHECK_OFFSET(refdef_t, text);
 
-CHECK_SIZE(refEntity_t);
-CHECK_OFFSET(refEntity_t, reType);
-CHECK_OFFSET(refEntity_t, renderfx);
-CHECK_OFFSET(refEntity_t, hModel);
-CHECK_OFFSET(refEntity_t, lightingOrigin);
-CHECK_OFFSET(refEntity_t, shadowPlane);
-CHECK_OFFSET(refEntity_t, axis);
-CHECK_OFFSET(refEntity_t, nonNormalizedAxes);
-CHECK_OFFSET(refEntity_t, origin);
-CHECK_OFFSET(refEntity_t, frame);
-CHECK_OFFSET(refEntity_t, oldorigin);
-CHECK_OFFSET(refEntity_t, customShader);
-CHECK_OFFSET(refEntity_t, shaderRGBA);
-CHECK_OFFSET(refEntity_t, rotation);
-static_assert(q3::kRtModel      == RT_MODEL,      "kRtModel differs from RT_MODEL");
-static_assert(q3::kRfMinlight   == RF_MINLIGHT,   "kRfMinlight differs from RF_MINLIGHT");
-static_assert(q3::kRfThirdPerson == RF_THIRD_PERSON, "kRfThirdPerson differs from RF_THIRD_PERSON");
-static_assert(q3::kRfFirstPerson == RF_FIRST_PERSON, "kRfFirstPerson differs from RF_FIRST_PERSON");
-static_assert(q3::kRfDepthHack  == RF_DEPTHHACK,  "kRfDepthHack differs from RF_DEPTHHACK");
-
 /* ---- the VM record (vmFind.h) ----------------------------------------------------------------
    vm_local.h pins the first two members itself - the x86 interpreter is written in assembly and
    reads them at these fixed offsets - so those two are checked against the engine's own constants

@@ -1447,23 +1447,6 @@ static void TestWeaponStockTable()
 	           "WeaponIcon returns the table icon");
 	CHECK_TRUE(!WeaponEsp::WeaponIcon(table, 14, icon, sizeof(icon)), "WeaponIcon: unlisted -> none");
 	CHECK_TRUE(!WeaponEsp::WeaponIcon(table, 0, icon, sizeof(icon)), "WeaponIcon: WP_NONE -> none");
-
-	// the 3D model paths, exactly as bg_misc.c's world_model[0] spells them (the models/
-	// prefix included - the path RE_RegisterModel takes)
-	char model[128];
-	CHECK_TRUE(table.haveModel[1] && strcmp(table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
-	           "model 1 (weapons2/gauntlet)");
-	CHECK_TRUE(table.haveModel[4] && strcmp(table.weapons[4].model, "models/weapons2/grenadel/grenadel.md3") == 0,
-	           "model 4 (the grenadel directory, not 'grenade')");
-	CHECK_TRUE(table.haveModel[11] && strcmp(table.weapons[11].model, "models/weapons/nailgun/nailgun.md3") == 0,
-	           "model 11 (weapons/nailgun)");
-	CHECK_TRUE(table.haveModel[13] && strcmp(table.weapons[13].model, "models/weapons/vulcan/vulcan.md3") == 0,
-	           "model 13 (weapons/vulcan)");
-	CHECK_TRUE(WeaponEsp::WeaponModel(table, 2, model, sizeof(model)) &&
-	           strcmp(model, "models/weapons2/machinegun/machinegun.md3") == 0,
-	           "WeaponModel returns the table's path");
-	CHECK_TRUE(!WeaponEsp::WeaponModel(table, 0, model, sizeof(model)), "WeaponModel: WP_NONE -> none");
-	CHECK_TRUE(!WeaponEsp::WeaponModel(table, 14, model, sizeof(model)), "WeaponModel: unlisted -> none");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1549,11 +1532,6 @@ namespace
 		const uint32_t sTcC          = PutStr(buf, off += 40, "weapon_tc_heavy");
 		const uint32_t sTcP          = PutStr(buf, off += 40, "TC Heavy Cannon");
 		const uint32_t sTcI          = PutStr(buf, off += 48, "icons/iconw_tc_heavy");
-		// the world_model[0] paths: the exact strings the cgame registers with RE_RegisterModel,
-		// which Model mode pushes into the scene (bg_misc.c spells them with the models/ prefix)
-		const uint32_t sGauntletM    = PutStr(buf, off += 48, "models/weapons2/gauntlet/gauntlet.md3");
-		const uint32_t sMachineM     = PutStr(buf, off += 48, "models/weapons2/machinegun/machinegun.md3");
-		const uint32_t sTcM          = PutStr(buf, off += 48, "models/weapons/tc_heavy/tc_heavy.md3");
 		const uint32_t sArmorC       = PutStr(buf, off += 40, "item_armor_shard");
 		const uint32_t sArmorP       = PutStr(buf, off += 40, "Armor Shard");
 		const uint32_t sEmpty        = PutStr(buf, off += 4,  "");
@@ -1624,14 +1602,6 @@ namespace
 					PutItem132(buf, e, sTcC, sTcP, sTcI, 0, 1, 19, sEmpty, sEmpty);
 				}
 			}
-			// world_model[0]: present for the gauntlet, the machinegun and the TC weapon; the
-			// other entries (armor, the unnamed weapon, the empty records) stay NULL
-			if (i == 2)
-				PutU32(buf, e + 8, sGauntletM);
-			else if (i == 3)
-				PutU32(buf, e + 8, sMachineM);
-			else if (i == 5)
-				PutU32(buf, e + 8, sTcM);
 		}
 		// after the table: garbage whose ints fail the entry shape, so a scan that starts part
 		// way into the real table cannot "recover" and find a second one
@@ -1676,18 +1646,6 @@ static void TestWeaponScannerStockLayout()
 	           "weapon 19 (past the stock range) keeps the mod's pickup name");
 	CHECK_TRUE(result.table.haveIcon[19] && strcmp(result.table.weapons[19].icon, "icons/iconw_tc_heavy") == 0,
 	           "weapon 19 keeps the mod's icon");
-	// the world_model[0] paths survive the scan (world_model is at +8, inside the shared head
-	// of both gitem_t layouts)
-	CHECK_TRUE(result.table.haveModel[1] &&
-	           strcmp(result.table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
-	           "weapon 1's model path survives the scan");
-	CHECK_TRUE(result.table.haveModel[2] &&
-	           strcmp(result.table.weapons[2].model, "models/weapons2/machinegun/machinegun.md3") == 0,
-	           "weapon 2's model path survives the scan");
-	CHECK_TRUE(result.table.haveModel[19] &&
-	           strcmp(result.table.weapons[19].model, "models/weapons/tc_heavy/tc_heavy.md3") == 0,
-	           "the TC weapon's model path survives the scan");
-	CHECK_TRUE(!result.table.haveModel[4], "a weapon with no model stays model-less");
 	CHECK_INT(result.table.weaponCount, 4, "four weapons in the table");
 
 	char name[64];
@@ -1720,9 +1678,6 @@ static void TestWeaponScannerIoqLayout()
 	           "weapon 5 classname fallback survives the wider layout");
 	CHECK_TRUE(result.table.haveName[19] && strcmp(result.table.weapons[19].name, "TC Heavy Cannon") == 0,
 	           "a TC weapon number past the stock range survives the wider layout");
-	CHECK_TRUE(result.table.haveModel[1] &&
-	           strcmp(result.table.weapons[1].model, "models/weapons2/gauntlet/gauntlet.md3") == 0,
-	           "the model path survives the wider layout");
 	CHECK_INT(result.table.weaponCount, 4, "four weapons in the ioq table");
 }
 
@@ -1796,145 +1751,6 @@ static void TestWeaponFadeMatchesOtherEsp()
 	CHECK_TRUE(scale > 0.67f && scale < 0.69f, "half scaled at the midpoint");
 }
 
-static void TestWeaponPlanModelEntity()
-{
-	Section("WeaponEsp::PlanModelEntity - the refEntity Model mode pushes");
-
-	NameEsp::PlayerTag tag;
-	memset(&tag, 0, sizeof(tag));
-	tag.lerpOrigin[0] = 100.0f;
-	tag.lerpOrigin[1] = -50.0f;
-	tag.lerpOrigin[2] = 10.0f;
-	tag.weapon = 4;
-
-	q3::refEntity_t re;
-
-	// guards: WP_NONE and an unregistered model are both rejected
-	CHECK_TRUE(!WeaponEsp::PlanModelEntity(tag, 1.0f, 0, re), "no registered handle -> nothing to push");
-	tag.weapon = 0;
-	CHECK_TRUE(!WeaponEsp::PlanModelEntity(tag, 1.0f, 7, re), "WP_NONE -> nothing to push");
-	tag.weapon = 4;
-
-	// unit scale, flat angles: RT_MODEL + the through-wall flags, the leg anchor, unit axes
-	memset(&re, 0xAA, sizeof(re));
-	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 1.0f, 7, re), "planned");
-	CHECK_INT(re.reType, q3::kRtModel, "RT_MODEL");
-	CHECK_INT(re.renderfx, q3::kRfDepthHack | q3::kRfMinlight,
-	          "RF_DEPTHHACK | RF_MINLIGHT (through the world, visible in the dark)");
-	CHECK_INT(re.hModel, 7, "the registered model handle");
-	CHECK_TRUE(re.origin[0] == 100.0f && re.origin[1] == -50.0f &&
-	           fabsf(re.origin[2] - (10.0f + q3::kWeaponEspLegHeight)) < 1e-6f,
-	          "origin is the leg anchor (lerpOrigin + 8)");
-	CHECK_INT((int)re.nonNormalizedAxes, 0, "unit axes: nonNormalizedAxes clear");
-	CHECK_INT(re.frame, 0, "frame 0 (the rest pose)");
-	CHECK_INT(re.customShader, 0, "the model's own shaders");
-	CHECK_TRUE(re.lightingOrigin[0] == 0.0f && re.lightingOrigin[1] == 0.0f &&
-	           re.lightingOrigin[2] == 0.0f && re.oldorigin[0] == 0.0f &&
-	           re.backlerp == 0.0f && re.skinNum == 0,
-	          "everything not set is zeroed");
-	// flat angles -> the identity matrix
-	const float identity[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-	int axisOk = 1;
-	for (int i = 0; i < 3 && axisOk; ++i)
-		for (int j = 0; j < 3; ++j)
-			if (fabsf(re.axis[i][j] - identity[i][j]) > 1e-6f)
-				axisOk = 0;
-	CHECK_TRUE(axisOk, "unit axes are the identity matrix at flat angles");
-
-	// pitch / yaw / roll: the axis matrix must be the engine's own AnglesToAxis (q_math.c,
-	// linked in) multiplied by the scale
-	tag.lerpAngles[0] = 20.0f;
-	tag.lerpAngles[1] = 90.0f;
-	tag.lerpAngles[2] = 5.0f;
-	const float angles[3] = { 20.0f, 90.0f, 5.0f };
-	float expect[3][3];
-	AnglesToAxis(angles, expect);
-	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 2.0f, 9, re), "planned (rotated, scaled)");
-	int scaledOk = 1;
-	for (int i = 0; i < 3 && scaledOk; ++i)
-		for (int j = 0; j < 3; ++j)
-			if (fabsf(re.axis[i][j] - expect[i][j] * 2.0f) > 1e-4f)
-				scaledOk = 0;
-	CHECK_TRUE(scaledOk, "the axes are the engine's AnglesToAxis * scale");
-	CHECK_INT((int)re.nonNormalizedAxes, 1, "scaled axes: nonNormalizedAxes set");
-	CHECK_INT(re.hModel, 9, "the other handle");
-
-	// a non-positive scale is clamped to 1 (a garbage cfg value must not flip the model inside
-	// out or shrink it to nothing)
-	CHECK_TRUE(WeaponEsp::PlanModelEntity(tag, 0.0f, 9, re), "planned (zero scale)");
-	int clampedOk = 1;
-	for (int i = 0; i < 3 && clampedOk; ++i)
-		for (int j = 0; j < 3; ++j)
-			if (fabsf(re.axis[i][j] - expect[i][j]) > 1e-4f)
-				clampedOk = 0;
-	CHECK_TRUE(clampedOk, "scale 0 is clamped to 1");
-	CHECK_INT((int)re.nonNormalizedAxes, 0, "clamped back to unit axes");
-}
-
-static void TestFindRefExport()
-{
-	Section("WeaponEsp::FindRefExportInBytes - locating refexport_t by shape");
-
-	const uintptr_t codeLow  = 0x10000000;
-	const uintptr_t codeHigh = 0x10100000;   // the main module's .text, fabricated
-
-	enum { kSize = 512 };
-	unsigned char region[kSize];
-	memset(region, 0xCC, sizeof(region));
-
-	// The engine holds one 28-slot run (refimport_t) and one 29-slot run (refexport_t) of
-	// code pointers. Fabricate both, the 28-slot one FIRST so the scanner must not stop at it.
-	const size_t riOff = 16;
-	const size_t reOff = riOff + 28 * 4 + 8;   // a few garbage bytes between the two
-	for (int k = 0; k < 28; ++k)
-		PutU32(region, riOff + (size_t)k * 4, (uint32_t)(0x10000100 + k * 4));
-	for (int k = 0; k < 29; ++k)
-		PutU32(region, reOff + (size_t)k * 4, (uint32_t)(0x10000800 + k * 4));
-
-	// The dispatcher's own bytes: CL_CgameSystemCalls calls the renderer through the table, so
-	// its code carries the re slot addresses as little-endian immediates. Fabricate 8 of the
-	// ~20 a real dispatcher has (>= kSlotHitsNeeded 6); the ri slots appear in none of them.
-	const int refSlots[8] = { 0, 2, 4, 6, 8, 10, 12, 14 };
-	unsigned char disp[128];
-	memset(disp, 0xCC, sizeof(disp));
-	for (int i = 0; i < 8; ++i)
-		PutU32(disp, (size_t)i * 4, (uint32_t)((uintptr_t)region + reOff + (size_t)refSlots[i] * 4));
-	const size_t dispLen = sizeof(disp);
-
-	uintptr_t base = 0xDEAD;
-	CHECK_TRUE(WeaponEsp::FindRefExportInBytes(region, sizeof(region), codeLow, codeHigh,
-	                                           disp, dispLen, &base),
-	          "a 29-slot run of code pointers is found");
-	CHECK_TRUE(base == (uintptr_t)region + reOff, "it is the refexport, not the 28-slot sibling");
-
-	// below the hit threshold (5 < kSlotHitsNeeded 6) nothing is accepted - the offset-shifted
-	// candidates inside the run score the shifted subset and must not carry the day
-	unsigned char disp5[128];
-	memset(disp5, 0xCC, sizeof(disp5));
-	for (int i = 0; i < 5; ++i)
-		PutU32(disp5, (size_t)i * 4, (uint32_t)((uintptr_t)region + reOff + (size_t)refSlots[i] * 4));
-	base = 0;
-	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(region, sizeof(region), codeLow, codeHigh,
-	                                            disp5, sizeof(disp5), &base),
-	          "fewer than 6 dispatcher references is not the table");
-
-	// the 28-slot sibling alone: there is no 29-consecutive run at all
-	unsigned char riOnly[256];
-	memset(riOnly, 0xCC, sizeof(riOnly));
-	for (int k = 0; k < 28; ++k)
-		PutU32(riOnly, 16 + (size_t)k * 4, (uint32_t)(0x10000100 + k * 4));
-	base = 0;
-	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(riOnly, sizeof(riOnly), codeLow, codeHigh,
-	                                            disp, dispLen, &base),
-	          "the 28-slot sibling alone is not a table");
-
-	// the same bytes outside the code range: a data pointer, not a function pointer
-	base = 0;
-	CHECK_TRUE(!WeaponEsp::FindRefExportInBytes(region, sizeof(region), 0x20000000, 0x20100000,
-	                                            disp, dispLen, &base),
-	          "pointers outside the code range do not form a table");
-}
-
 int main(void)
 {
 	printf("kutaQ3 hook tests - NAME ESP core (nameEspCore.cpp)\n");
@@ -1964,8 +1780,6 @@ int main(void)
 	TestWeaponScannerNegatives();
 	TestWeaponLegAnchor();
 	TestWeaponFadeMatchesOtherEsp();
-	TestWeaponPlanModelEntity();
-	TestFindRefExport();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;

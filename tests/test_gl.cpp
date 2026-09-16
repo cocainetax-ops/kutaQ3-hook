@@ -1412,40 +1412,6 @@ static void TestWeaponScaleAndFade()
 	CHECK_INT(WeaponEsp::LastDrawStats().faded, 1, "counted as faded, not drawn");
 }
 
-static void TestWeaponModelFallback()
-{
-	Section("WEAPON ESP model mode - no registered models here: the icon style is the fallback");
-
-	// Off Windows (this build) EnsureModelHandles() never registers a model, so every
-	// Model-mode tag must fall back to the icon - exactly the icon-mode path (a chip where
-	// the texture cannot be loaded), with the shortfall counted for the menu.
-	CHECK_TRUE(BuildArmedWorld(), "frame gathered");
-	Rec::CurrentDC() = (void*)(size_t)0xD157A;
-	Rec::Reset(0, 0, kVpW, kVpH);
-	Config::g_Settings.nameEsp      = false;
-	Config::g_Settings.distanceEsp  = false;
-	Config::g_Settings.healthEsp    = false;
-	Config::g_Settings.weaponEsp    = true;
-	Config::g_Settings.weaponEspStyle      = 2;   // model
-	Config::g_Settings.weaponEspModelScale = 2.0f; // inert off Windows: nothing to scale
-	WeaponEsp::ResetDrawState();
-	WeaponEsp::Draw();
-
-	const WeaponEsp::DrawStats& st = WeaponEsp::LastDrawStats();
-	CHECK_INT(st.drawn, 2, "the two armed players are still tagged");
-	CHECK_INT(st.modelsMissing, 2, "both fell back: no model is registered in this build");
-	CHECK_INT(st.iconsMissing, 2, "and the fallback icons have no texture here either (chips)");
-	CHECK_INT(st.behind, 1, "the player behind the viewer is still skipped");
-	CHECK_INT(st.faded, 0, "nothing faded out");
-	// the fallback is the icon path itself: two chips, one outline + one filled quad each
-	CHECK_INT(Rec::Count("glBegin"), 4, "two chips issued through the icon path");
-	CHECK_INT(Rec::Count("glCallLists"), 0, "no text");
-
-	// the scale setting must not disturb the fallback (the 2D icon uses the distance ramp only)
-	float chipX = 0.0f, chipY = 0.0f;
-	CHECK_TRUE(FirstQuadOrigin(chipX, chipY), "a chip quad was issued");
-}
-
 int main(void)
 {
 	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + weaponEsp.cpp + glText.cpp + glDraw.cpp)\n");
@@ -1465,7 +1431,6 @@ int main(void)
 	TestDistanceScaleAndFade();
 	TestWeaponTextAtLeg();
 	TestWeaponIconChips();
-	TestWeaponModelFallback();
 	TestWeaponStackingBelowHeadStack();
 	TestWeaponScaleAndFade();
 

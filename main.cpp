@@ -1366,28 +1366,10 @@ void RenderKutaQ3Menu()
 				ImGui::RadioButton("Text", &cfg.weaponEspStyle, 0);
 				ImGui::SameLine();
 				ImGui::RadioButton("Icon", &cfg.weaponEspStyle, 1);
-				ImGui::SameLine();
-				ImGui::RadioButton("Model", &cfg.weaponEspStyle, 2);
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("Text: the weapon's name string, in the GL::Font face.\n"
 					                  "Icon: the cgame's own item icon for the weapon, loaded\n"
-					                  "from the game's paks and drawn at the leg position.\n"
-					                  "Model: the weapon's actual 3D model (the same file the\n"
-					                  "cgame renders from its item table) pushed into the\n"
-					                  "world scene at the leg position, through walls.\n"
-					                  "A weapon without a model falls back to the icon.");
-				if (cfg.weaponEspStyle == 2)
-				{
-					ImGui::Indent(12.0f);
-					ImGui::SliderFloat("model scale", &cfg.weaponEspModelScale, 0.25f, 4.0f, "%.2f");
-					ImGui::SameLine();
-					ImGui::TextDisabled("(1.00 = the model's own size)");
-					ImGui::Unindent(12.0f);
-					ImGui::TextDisabled("%s", WeaponEsp::ModelStatus());
-					if (st.modelsMissing)
-						ImGui::TextDisabled("%d tag%s have no 3D model (icon shown instead)",
-					                    st.modelsMissing, st.modelsMissing == 1 ? "" : "s");
-				}
+					                  "from the game's paks and drawn at the leg position.");
 
 				const NameEsp::Frame& wsp = NameEsp::Current();
 				if (wsp.valid && wsp.playerCount > 0)

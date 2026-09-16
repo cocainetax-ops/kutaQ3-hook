@@ -24,7 +24,7 @@
 #include <gl/GL.h>
 #include <stdlib.h>        // malloc / free (the pak + TGA buffers)
 #include <stdint.h>
-#include <string.h>        // memset / strcmp (the model cache)
+#include <string.h>        // strlen (the pak entry lookup)
 
 #if defined(_WIN32)
 #include "main.h"          // Log()
@@ -85,10 +85,10 @@ namespace
 		                   // appear by itself); a new table or a new GL context earns a retry
 	};
 	IconTex s_icons[WeaponEsp::kTableWeapons];
-	int s_tableGen = 0;    // bumped whenever the weapon table is (re)applied - the cgame changed
-	                     // (the model handle cache keys off it too, so it lives in the shared
-	                     // half even though only the _WIN32 code bumps it)
 #if defined(_WIN32)
+	int s_tableGen = 0;  // bumped whenever the weapon table is (re)applied - the cgame changed.
+	                     // (the icon slots remember the generation they were last tried under,
+	                     // so a table from a new cgame earns a retry of every missing icon)
 	HDC s_iconHdc = 0;   // the GL context the textures live on; a new one (vid_restart)
 	                     // invalidates every id - the game destroys the context, not the ids
 
@@ -123,41 +123,6 @@ namespace
 	int      s_frameSerial = 0;
 
 	WeaponEsp::DrawStats s_stats;
-
-	// =========================================================================================== //
-	// model mode (3D): the registered weapon models + the per-frame injection state.
-	//
-	// s_models[w].handle is a qhandle from the ENGINE's renderer (RE_RegisterModel through the
-	// located refexport_t), for the model path s_models[w].path, taken under table generation
-	// s_models[w].triedGen. A handle is only ever pushed into a scene when it was taken under
-	// the CURRENT table generation - a dead handle is an out-of-bounds model index inside the
-	// renderer. The handles die when the renderer tears down its media (a vid_restart), which
-	// is detected the same way the icon textures detect it: the GL context changed.
-	// =========================================================================================== //
-	struct ModelRec
-	{
-		char path[128];   // the table's model path this handle was registered for ("" = none)
-		int  handle;      // qhandle, 0 = none
-		int  triedGen;    // the table generation the lookup for this weapon last ran under
-	};
-	ModelRec s_models[WeaponEsp::kTableWeapons];
-
-	// Set by OnWorldRenderScene() once this frame's models have been pushed into the scene;
-	// Draw() (frame end) clears it for the next frame.
-	bool s_injectedThisFrame = false;
-
-	// What the last frame's scene received (the menu's "N weapon models in the scene").
-	int  s_modelInjected    = 0;
-
-	bool ModelReady(int weapon)
-	{
-		// The overlay draws nothing for a player whose model is handled by the scene: the tag
-		// is "up" when the scene has (or had, this frame) its model.
-		if (weapon < 0 || weapon >= WeaponEsp::kTableWeapons)
-			return false;
-		const ModelRec& rec = s_models[weapon];
-		return rec.handle > 0 && rec.triedGen == s_tableGen;
-	}
 
 	void ResetTagState()
 	{
@@ -906,140 +871,6 @@ namespace
 		return uploaded;
 	}
 
-	// =========================================================================================== //
-	// model mode (3D) - the engine's renderer, reached the same way everything else is: by
-	// shape, from the engine's own memory, with nothing called into the cgame.
-	//
-	// refexport_t ("re") - tr_public.h, a global in quake3.exe - is the struct of 29 renderer
-	// function pointers the cgame's traps call through (RE_RegisterModel,
-	// RE_AddRefEntityToScene, ...). It is located with FindRefExportInBytes(): a run of 29
-	// consecutive main-module code pointers, accepted only when the cgame's own syscall
-	// dispatcher (already in hand: vm->systemCall) references the candidate's slots by address.
-	// =========================================================================================== //
-	struct RefExport
-	{
-		uint32_t slot[WeaponEsp::kRefExportSlots];
-	};
-	RefExport* s_refExport        = NULL;   // the located table (engine memory, outlives the VM)
-	bool       s_refExportTried   = false;  // a scan ran and found nothing (retried, throttled)
-	DWORD      s_refExportNextTry = 0;
-
-	// The main module's own range (quake3.exe): where the table must live and where every
-	// slot must point.
-	bool MainModuleRange(uintptr_t& low, uintptr_t& high)
-	{
-		HMODULE module = GetModuleHandle(NULL);
-		if (!module)
-			return false;
-		const BYTE* base = (const BYTE*)module;
-		const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
-		if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-			return false;
-		const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-		if (nt->Signature != IMAGE_NT_SIGNATURE)
-			return false;
-		low  = (uintptr_t)base;
-		high = low + nt->OptionalHeader.SizeOfImage;
-		return high > low;
-	}
-
-	// The first `want` bytes of the cgame's syscall dispatcher, for the slot-address check.
-	// The address vm->systemCall carries is where the detour now lives (a 5-byte jump plus the
-	// original prologue), but the dispatcher's body - every case thunk, with the refexport
-	// slot addresses as immediates - is still in place after it, so a plain forward read is
-	// exactly the code we want. Read-only walk: .text is committed, but never trust the tail.
-	size_t DispatcherCode(unsigned char* buf, size_t want)
-	{
-		uintptr_t start = 0;
-		if (!Vm::DispatcherAddress(start) || !start)
-			return 0;
-
-		size_t got = 0;
-		MEMORY_BASIC_INFORMATION info;
-		uintptr_t address = start;
-		const uintptr_t limit = start + want;
-		while (address < limit && got < want)
-		{
-			if (!VirtualQuery((LPCVOID)address, &info, sizeof(info)))
-				break;
-			const uintptr_t end = (uintptr_t)info.BaseAddress + info.RegionSize;
-			if (info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
-				break;
-			const uintptr_t readEnd = (end < limit) ? end : limit;
-			const size_t n = (size_t)(readEnd - address);
-			if (n + got > want)
-				break;
-#ifdef _MSC_VER
-			__try
-			{
-				memcpy(buf + got, (const void*)address, n);
-				got += n;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				break;
-			}
-#else
-			memcpy(buf + got, (const void*)address, n);
-			got += n;
-#endif
-			address = readEnd;
-			if (end <= address)
-				break;
-		}
-		return got;
-	}
-
-	// Locate the refexport_t once (and remember it forever: it is a global in the executable,
-	// which cannot change under us). Throttled retries while nothing has been found.
-	bool EnsureRefExport()
-	{
-		if (s_refExport)
-			return true;
-		const DWORD now = timeGetTime();
-		if (s_refExportTried && now < s_refExportNextTry)
-			return false;
-
-		uintptr_t low = 0, high = 0;
-		if (!MainModuleRange(low, high))
-			return false;
-
-		// The dispatcher's bytes, once per scan (the slot-address check is the expensive half).
-		const size_t kDispBytes = 128 * 1024;
-		unsigned char* disp = (unsigned char*)malloc(kDispBytes);
-		if (!disp)
-			return false;
-		const size_t dispLen = DispatcherCode(disp, kDispBytes);
-		if (dispLen < 4096)
-		{
-			free(disp);
-			return false;
-		}
-
-		bool found = false;
-		ForEachWritableRegion(low, high, [&](const unsigned char* region, size_t size)
-		{
-			if (found)
-				return;
-			uintptr_t base = 0;
-			if (WeaponEsp::FindRefExportInBytes(region, size, low, high, disp, dispLen, &base))
-			{
-				s_refExport = (RefExport*)base;
-				found = true;
-				Log("[kutaQ3] renderer refexport table at %p (RegisterModel %p, AddRefEntityToScene %p)",
-				    (const void*)base,
-				    (void*)(uintptr_t)s_refExport->slot[WeaponEsp::kSlotRegisterModel],
-				    (void*)(uintptr_t)s_refExport->slot[WeaponEsp::kSlotAddRefEntityToScene]);
-			}
-		});
-		free(disp);
-
-		if (found)
-			return true;
-		s_refExportTried   = true;
-		s_refExportNextTry = now + 2000;
-		return false;
-	}
 }
 
 #else // !defined(_WIN32) - the test build: no VM to scan, no paks to read
@@ -1061,198 +892,6 @@ namespace
 		out = s_icons[weapon];
 		return out.valid;
 	}
-
-#endif // _WIN32
-
-// =============================================================================================== //
-// model mode (3D) - the public half
-// =============================================================================================== //
-#if defined(_WIN32)
-
-int WeaponEsp::EnsureModelHandles()
-{
-	// A recreated GL context (vid_restart) tore the renderer down with it: every model handle
-	// is dead. (The icon textures watch the same context change and invalidate themselves in
-	// EnsureIconTexture; the models do it here, against the same tracked DC.)
-	if (s_iconHdc && s_iconHdc != wglGetCurrentDC())
-		memset(s_models, 0, sizeof(s_models));
-
-	EnsureWeaponTable();                       // s_table / s_tableGen current for this VM
-	if (!EnsureRefExport())
-		return 0;                              // never located the renderer table: nothing to register
-
-	int ready = 0;
-	for (int w = 1; w < WeaponEsp::kTableWeapons; ++w)
-	{
-		ModelRec& rec = s_models[w];
-		char path[128];
-		if (!WeaponEsp::WeaponModel(s_table, w, path, sizeof(path)))
-		{
-			// the table has no model for this weapon (or it changed since): forget any handle
-			if (rec.handle != 0 || rec.path[0] != 0)
-			{
-				rec.handle   = 0;
-				rec.path[0]  = 0;
-				rec.triedGen = s_tableGen;
-			}
-			continue;
-		}
-		if (rec.handle > 0 && rec.triedGen == s_tableGen && strcmp(rec.path, path) == 0)
-		{
-			++ready;
-			continue;                            // this exact path, this table generation
-		}
-		if (rec.triedGen == s_tableGen)
-			continue;                            // looked for it under this table already: no model
-		rec.triedGen = s_tableGen;
-		CopyIconName(rec.path, sizeof(rec.path), path);
-
-		int h = 0;
-#ifdef _MSC_VER
-		__try
-		{
-			h = ((int (Q3SDK_CDECL *)(const char*))
-			        s_refExport->slot[WeaponEsp::kSlotRegisterModel])(path);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			Log("[kutaQ3] RE_RegisterModel faulted on %s - model mode falls back to the icon", path);
-			s_refExport        = NULL;           // allow a throttled rescan of the table
-			s_refExportTried   = false;
-			s_refExportNextTry = 0;
-		}
-#else
-		h = ((int (*)(const char*))
-		        s_refExport->slot[WeaponEsp::kSlotRegisterModel])(path);
-#endif
-		rec.handle = (h > 0) ? h : 0;
-		if (rec.handle > 0)
-			++ready;
-	}
-	if (ready > 0)
-		Log("[kutaQ3] model mode: %d weapon model(s) registered", ready);
-	return ready;
-}
-
-void WeaponEsp::OnWorldRenderScene(const int* args)
-{
-	if (!Config::g_Settings.weaponEsp ||
-	    Config::g_Settings.weaponEspStyle != WeaponEsp::StyleModel)
-		return;
-	if (s_injectedThisFrame)
-		return;                                 // the scene is built once per frame
-
-	// The refdef the scene is about to be rendered with - read while the cgame still owns it.
-	q3::refdef_t fd;
-	if (!Vm::TrapRefdef(args, &fd))
-		return;
-	if ((fd.rdflags & q3::kRdfNoWorldModel) != 0)
-		return;                                 // a HUD / model-view scene: no world to sit in
-
-	EnsureWeaponTable();                        // cheap: a no-op once the table is applied
-
-	float scale = Config::g_Settings.weaponEspModelScale;
-	if (!(scale > 0.0f))
-		scale = 1.0f;
-
-	// The players' positions at the exact instant this frame renders (fd.time is cg.time):
-	// the same lerp the cgame applies to the bodies, evaluated at the moment the scene will
-	// capture them - so the model sits on the body instead of trailing a frame behind it.
-	if (!NameEsp::Gather(fd.time, Vm::Syscall(), &fd))
-	{
-		s_injectedThisFrame = true;
-		s_modelInjected     = 0;
-		return;
-	}
-	const NameEsp::Frame& frame = NameEsp::Current();
-
-	int pushed = 0;
-	if (frame.valid)
-	{
-		for (int i = 0; i < frame.playerCount; ++i)
-		{
-			const NameEsp::PlayerTag& tag = frame.players[i];
-			if (!ModelReady(tag.weapon))
-				continue;                        // no model: the overlay falls back to the icon
-			q3::refEntity_t re;
-			if (!PlanModelEntity(tag, scale, s_models[tag.weapon].handle, re))
-				continue;
-			if (!s_refExport)
-				break;
-#ifdef _MSC_VER
-			__try
-			{
-				((void (Q3SDK_CDECL *)(const q3::refEntity_t*))
-				 s_refExport->slot[WeaponEsp::kSlotAddRefEntityToScene])(&re);
-				++pushed;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				Log("[kutaQ3] RE_AddRefEntityToScene faulted - model injection stopped (icon fallback stays)");
-				s_refExport        = NULL;       // allow a throttled rescan of the table
-				s_refExportTried   = false;
-				s_refExportNextTry = 0;
-				break;
-			}
-#else
-			((void (*)(const q3::refEntity_t*))
-			 s_refExport->slot[WeaponEsp::kSlotAddRefEntityToScene])(&re);
-			++pushed;
-#endif
-		}
-	}
-	s_modelInjected     = pushed;
-	s_injectedThisFrame = true;
-}
-
-void WeaponEsp::ResetModelHandles()
-{
-	// A level change (or the VM going away): the renderer re-registers all its media, so the
-	// qhandles from the old level are dead. The refexport TABLE itself is a global in the
-	// executable and survives.
-	memset(s_models, 0, sizeof(s_models));
-	s_modelInjected = 0;
-}
-
-const char* WeaponEsp::ModelStatus()
-{
-	static char line[160];
-	if (!s_refExport)
-	{
-		snprintf(line, sizeof(line), "renderer table: %s",
-		         s_refExportTried ? "not found (Model mode falls back to the icon)"
-		                         : "not located yet");
-		return line;
-	}
-	int ready = 0;
-	for (int w = 0; w < WeaponEsp::kTableWeapons; ++w)
-		if (s_models[w].triedGen == s_tableGen && s_models[w].handle > 0)
-			++ready;
-	snprintf(line, sizeof(line), "renderer table found - %d model(s) registered", ready);
-	return line;
-}
-
-#else // !defined(_WIN32) - the test build: no renderer to talk to, model mode is icon mode
-
-int WeaponEsp::EnsureModelHandles()
-{
-	return 0;                                   // no models off Windows: every tag falls back to the icon
-}
-
-void WeaponEsp::OnWorldRenderScene(const int*)
-{
-}
-
-void WeaponEsp::ResetModelHandles()
-{
-	memset(s_models, 0, sizeof(s_models));
-	s_modelInjected = 0;
-}
-
-const char* WeaponEsp::ModelStatus()
-{
-	return "not available off Windows (icon fallback)";
-}
 
 #endif // _WIN32
 
@@ -1282,10 +921,6 @@ void WeaponEsp::Draw()
 {
 	s_stats.drawn = s_stats.inView = s_stats.edge = s_stats.behind = s_stats.faded = 0;
 	s_stats.iconsMissing = 0;
-	s_stats.modelsMissing = 0;
-	// Draw() runs at the end of every frame (the SwapBuffers hook), after the scene has been
-	// rendered - which is when the next frame's model injection earns its one push.
-	s_injectedThisFrame = false;
 	if (!Config::g_Settings.weaponEsp)
 	{
 		// off: forget every fade, so turning the feature back on ramps the tags in again
@@ -1324,8 +959,6 @@ void WeaponEsp::Draw()
 		return;
 
 	EnsureWeaponTable();
-	if (Config::g_Settings.weaponEspStyle == WeaponEsp::StyleModel)
-		EnsureModelHandles();   // at frame end the renderer is idle: register missing models
 
 	// One clock step for the whole frame: every tag fades in over the same interval.
 	const int stepMs = ClockStepMs(frame.serverTime);
@@ -1341,7 +974,7 @@ void WeaponEsp::Draw()
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-		const bool iconMode = (Config::g_Settings.weaponEspStyle != 0);
+		const bool iconMode = (Config::g_Settings.weaponEspStyle == WeaponEsp::StyleIcon);
 		static const unsigned char kTextRgb[3] = { 255, 140, 0 };   // saturated orange: readable
 		                                                            // on any background, distinct
 		                                                            // from the team colours
@@ -1363,13 +996,7 @@ void WeaponEsp::Draw()
 
 			float scale = 1.0f, fade = 1.0f;
 			DistanceEsp::DistanceFade(tag.distance, scale, fade);
-			// Model mode with a registered model: the 3D weapon model is the tag itself, pushed
-			// into the scene by OnWorldRenderScene at this player's exact rendered position.
-			// A real 3D object shrinks with distance on its own, so the 2D ramp does not apply.
-			const bool modelReady =
-			    (Config::g_Settings.weaponEspStyle == WeaponEsp::StyleModel) &&
-			    ModelReady(tag.weapon);
-			if (!modelReady && fade < 0.04f)
+			if (fade < 0.04f)
 			{
 				++s_stats.faded;
 				continue;                           // faded to nothing: nothing to draw
@@ -1393,19 +1020,6 @@ void WeaponEsp::Draw()
 				++s_stats.behind;                   // behind the viewer
 				continue;
 			}
-
-			if (modelReady)
-			{
-				// No overlay for this one: the weapon's 3D model is in the world already.
-				++s_stats.drawn;
-				if (p.inView)
-					++s_stats.inView;
-				else
-					++s_stats.edge;
-				continue;
-			}
-			if (Config::g_Settings.weaponEspStyle == WeaponEsp::StyleModel)
-				++s_stats.modelsMissing;            // model mode, no model: the icon below is the fallback
 
 			TagState& st = TagSlot(tag.clientNum);
 			const bool fresh = (st.steppedAt != s_frameSerial);

@@ -92,11 +92,6 @@ namespace NameEsp
 		char  name[64];       // Q3 "^1" colour codes already stripped
 		float origin[3];      // head anchor (lerpOrigin + kPlayerTagHeight)
 		float lerpOrigin[3];  // cent->lerpOrigin: the interpolated feet/origin the model sits on
-		float lerpAngles[3];  // cent->lerpAngles: the player's own interpolated pitch/yaw/roll,
-		                      // lerped with the same fraction as lerpOrigin (the cgame's
-		                      // CG_InterpolateEntityPosition lerps both). WEAPON ESP's 3D Model
-		                      // mode orients the weapon model with these, the way the cgame
-		                      // orients the body it floats on.
 		int   clientNum;
 		int   team;           // Team
 		int   weapon;         // entityState_t::weapon: the player's current weapon_t. This is
