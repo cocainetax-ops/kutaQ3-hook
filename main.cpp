@@ -1320,7 +1320,8 @@ void RenderKutaQ3Menu()
 			                      "underneath the name and stays thinner than the player model.");
 			if (cfg.healthEsp)
 			{
-				ImGui::IntSlider("Assumed spawn HP", &cfg.healthEspSpawnHealth, 1, 200);
+				// SliderInt - the name this bundled Dear ImGui build exposes (no IntSlider alias here).
+			ImGui::SliderInt("Assumed spawn HP", &cfg.healthEspSpawnHealth, 1, 200);
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("What an unmeasured player (no hit since spawn/respawn) is\n"
 			                          "drawn at, as a hatched bar. Stock Q3 spawns at 100; match a\n"

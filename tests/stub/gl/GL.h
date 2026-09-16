@@ -154,14 +154,14 @@ inline GLuint glGenLists(GLsizei range)
 
 // ---- the texture surface the WEAPON ESP icon path touches (weaponEsp.cpp) -------------------
 // glGenTextures hands out ids the way a driver would, so a test can tell "bound the loaded
-// icon" from "bound nothing" in the recorded calls.
-inline GLuint glGenTextures(GLsizei n)
+// icon" from "bound nothing" in the recorded calls. Same void-out signature as the real
+// <GL/gl.h>, so weaponEsp.cpp cannot drift onto a call that only compiles against this stub.
+inline void glGenTextures(GLsizei n, GLuint* textures)
 {
 	static GLuint nextTex = 5000;
-	const GLuint tex = nextTex;
-	nextTex += (GLuint)n;
+	for (GLsizei i = 0; i < n; ++i)
+		textures[i] = nextTex++;
 	Rec::Push1("glGenTextures", (double)n);
-	return tex;
 }
 
 inline void glBindTexture(GLenum target, GLuint texture)
