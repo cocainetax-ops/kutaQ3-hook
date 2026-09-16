@@ -5,8 +5,8 @@
 //
 // Dynamic 2D health bars floating above every other player, drawn in the same SwapBuffers overlay
 // as NAME ESP. Traditional fill: remaining HP as a green-to-red bar. Toggled independently from
-// the VISUALS tab; when both are on the bar sits underneath the name, thinner and no wider than
-// the projected player model.
+// the VISUALS tab; the bar always sits on the LAST row of the NameEsp::ComputeEspRows() stack
+// (name, then distance, then the bar), thinner, and no wider than the projected player model.
 //
 // Data
 // ----
@@ -43,10 +43,6 @@ namespace HealthEsp
 	const float kFadeStartDist = 400.0f;
 	const float kFadeEndDist   = 2500.0f;
 	const float kMinScale      = 0.35f;
-
-	// FONT_HEIGHT (14) + 2px gap: when NAME ESP is also on, the bar is this many pixels below
-	// the name's top-left so the two never overlap.
-	const float kNameStackOffset = 16.0f;
 
 	const float kBarHeightSolo    = 4.5f;
 	const float kBarHeightStacked = 3.0f;
@@ -124,12 +120,14 @@ namespace HealthEsp
 	};
 
 	// Overlay-space bar centred on overlayP (already converted from ProjectWorldToScreen the
-	// way NameEsp::Draw does: x -= vp.x, y += vp.y). Width is capped to the projected player
-	// bbox so the bar never exceeds the model; when nameEspOn the bar is thinner and sits
-	// kNameStackOffset pixels below the name.
+	// way NameEsp::Draw does: x -= vp.x, y += vp.y). rowOffset is the bar's row from
+	// NameEsp::ComputeEspRows() - the pixels below the head anchor it sits at - which also say
+	// whether a text row (name / distance) is above it, and so whether the bar gets the thinner
+	// stacked style. Width is capped to the projected player bbox so the bar never exceeds the
+	// model.
 	inline bool ComputeBar(const NameEsp::PlayerTag& tag, const NameEsp::View& view,
 	                       const NameEsp::Viewport& vp, const NameEsp::ScreenPoint& overlayP,
-	                       bool nameEspOn, BarGeom& out)
+	                       float rowOffset, BarGeom& out)
 	{
 		out.x = out.y = out.w = out.h = out.fillW = 0.0f;
 		out.alpha = 0.0f;
@@ -170,21 +168,23 @@ namespace HealthEsp
 		if (modelW < 6.0f)
 			modelW = 6.0f;
 
-		const float frac = nameEspOn ? kWidthFracStacked : kWidthFracSolo;
+		// A text row above (any rowOffset > 0) means the bar is stacked under it: thinner and
+		// shorter, so it stays a strip, not a block.
+		const bool stacked = rowOffset > 0.5f;
+
+		const float frac = stacked ? kWidthFracStacked : kWidthFracSolo;
 		float w = modelW * frac * scale;
 		if (w > modelW)
 			w = modelW;
 		if (w < 4.0f)
 			w = 4.0f;
 
-		float h = (nameEspOn ? kBarHeightStacked : kBarHeightSolo) * scale;
+		float h = (stacked ? kBarHeightStacked : kBarHeightSolo) * scale;
 		if (h < 2.0f)
 			h = 2.0f;
 
 		float x = overlayP.x - w * 0.5f;
-		float y = overlayP.y;
-		if (nameEspOn)
-			y = overlayP.y + kNameStackOffset;
+		float y = overlayP.y + rowOffset;
 
 		const float overlayW = (float)vp.width;
 		const float overlayH = (float)vp.height;

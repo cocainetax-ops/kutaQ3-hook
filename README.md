@@ -92,6 +92,18 @@ display-list text renderer in `glText.h` / `glText.cpp`. Toggled with the **Name
 (OpenGL)** tickbox in the VISUALS tab (`NameEspEnabled` in `kutaQ3.cfg`); the colour is the
 team from the clientinfo, and a tag clamped to the screen edge is dimmed.
 
+**DISTANCE ESP** (`distanceEsp.h`) draws the distance to every other player in metres with an
+"M" after the number ("128M") above their head, using the same `GL::Font` display-list renderer
+and the same face and full size as NAME ESP, centred on the same head anchor. The value is
+`|cg.refdef.vieworg - cent->lerpOrigin|` in world units - the same one `NameEsp::Gather()`
+already computes per tag for the HEALTH ESP fade - rounded to the nearest whole number so the
+string stays as short as a distance can be. Instead of rendering everyone's distance at full
+size and opacity, the text scales down (14px -> 5px) and fades to transparent as the player
+moves 400 -> 2500 units away. The three ESP overlays stack in fixed 16px rows above the head
+anchor (`NameEsp::ComputeEspRows()`): the name, then the distance, then the health bar - a
+disabled feature takes no row, so nothing overlaps whatever combination is on, and with all
+three on the HEALTH ESP bar is on the last row.
+
 **HEALTH ESP** (`healthEsp.h`) draws a 2D bar at the same head anchor, using the player list
 `NameEsp::Gather()` already built. Stock 1.32 never networks other players' `STAT_HEALTH`, so
 the bar is a **damage-derived estimate, not a live health readout**: the only sample that
@@ -380,6 +392,15 @@ the real 1.32b headers.
   dead players (corpses) are skipped, and tags for players outside the frustum are clamped to
   the screen edge and dimmed. Up close, where aiming up or down would push the above-the-head
   anchor off the screen while the player is still visible, the tag re-anchors to the chest.
+- **DISTANCE ESP** (`distanceEsp.h`) - the distance to every other player in metres
+  ("128M") drawn above their head through walls, in the same font and full size as NAME ESP,
+  centred on the same head anchor. Toggled with the **Distance ESP (OpenGL)** tickbox in the
+  VISUALS tab (`DistanceEspEnabled` in `kutaQ3.cfg`). The value is
+  `|cg.refdef.vieworg - cent->lerpOrigin|`, the same one the HEALTH ESP fade uses. The text
+  scales down (14px -> 5px) and fades out with range (400 -> 2500 units) instead of drawing
+  everyone at full size and opacity. The three ESP overlays stack in their own 16px rows -
+  name, distance, then the health bar on the last row - so no combination of the three
+  overlaps on screen.
 - **HEALTH ESP** (`healthEsp.h`) - a 2D health bar above every other player, through walls.
   Toggled independently with the **Health ESP (OpenGL)** tickbox in the VISUALS tab
   (`HealthEspEnabled` in `kutaQ3.cfg`). Stock Q3 does not put other players' `STAT_HEALTH` in
@@ -387,8 +408,8 @@ the real 1.32b headers.
   spawn) is drawn as a neutral hatched bar at the assumed spawn level (`HealthEspSpawnHealth`,
   default 100), a measured player as a solid green-to-red bar at the last known HP. Heals
   (health/regen packs, armor) are not modelled; the next hit re-measures. Bars are thinner and
-  shorter than the projected player model, fade and shrink with distance, and sit underneath
-  the name when Name ESP is also on.
+  shorter than the projected player model, fade and shrink with distance, and sit on the last
+  row of the ESP stack - underneath the name and / or the distance when those are on.
 - Player shader logger - hold `F10` in-game to dump player model shader names to `log.txt`
 - Dear ImGui menu window called **"kutaQ3 hook"**
   - `INSERT` toggles the menu
@@ -427,6 +448,7 @@ ChamsEnabled=1
 ChamsStyle=0          ; 0 = solid, 1 = wireframe
 NeonEnabled=0         ; 1 = neon bloom chams override the style above
 NameEspEnabled=1      ; 1 = player names on screen (reads the cgame VM directly)
+DistanceEspEnabled=1  ; 1 = distance in metres above players (scaled + faded with range)
 HealthEspEnabled=1    ; 1 = health bars above players (estimated: last EV_PAIN sample, hatched until first hit)
 HealthEspSpawnHealth=100 ; 1..200 = HP an unmeasured player (no hit since spawn) is drawn at
 LogShaders=1
@@ -450,9 +472,9 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - distance fade and bar layout, and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. |
 | `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
-| `gl` | the real `nameEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames and the chest anchor holding its ground. |
+| `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `healthEsp.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the three ESP overlays stacking in their own rows, and the distance text's scale + fade with range. |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.

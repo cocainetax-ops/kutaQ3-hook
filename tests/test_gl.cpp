@@ -15,11 +15,14 @@
 // =============================================================================================== //
 
 #include "nameEsp.h"
+#include "distanceEsp.h"
 #include "healthEsp.h"
 #include "fake_engine.h"
 #include "config.h"
 #include "check.h"
 #include "glrec.h"
+#include "glText.h"   // FONT_HEIGHT - the full-size face the name ESP (and the closest
+                      // distance tag) is drawn in
 
 #include <stdio.h>
 #include <string.h>
@@ -111,6 +114,63 @@ namespace
 			if (texts[i]->text == name)
 				++n;
 		return n;
+	}
+
+	// where the overlay should have put a distance tag centred on this screen point, in the
+	// row rowOffset px below the head anchor, in a face FONT_HEIGHT of fontH px - the same
+	// centring plus the same on-screen clamp distanceEsp.cpp applies
+	void ExpectedDistanceAt(const NameEsp::ScreenPoint& p, const char* text,
+	                        float rowOffset, float fontH, float& x, float& y)
+	{
+		const float textWidth = kCharWidth * (float)strlen(text);
+		x = p.x - textWidth * 0.5f;
+		y = p.y + rowOffset;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (x + textWidth + 1.0f > (float)kVpW)
+			x = (float)kVpW - textWidth - 1.0f;
+		if (x < 0.0f)
+			x = 0.0f;
+		if (y < 0.0f)
+			y = 0.0f;
+		if (y + fontH + 1.0f > (float)kVpH)
+			y = (float)kVpH - fontH - 1.0f;
+		if (y < 0.0f)
+			y = 0.0f;
+	}
+
+	// the display-list base assigned to the i-th font bake (wglUseFontBitmaps) in the current
+	// recorded stream - how a test tells which face a string went out in
+	unsigned int ListBaseOfBake(int i)
+	{
+		const std::vector<const Rec::Call*> bakes = Rec::All("wglUseFontBitmaps");
+		if (i < 0 || i >= (int)bakes.size())
+			return 0;
+		return (unsigned int)bakes[i]->a[2];
+	}
+
+	// the (x, y) of the first vertex of the first GL_QUADS in the stream - with the ESP draws
+	// in order, that is the first player's health-bar background
+	bool FirstQuadOrigin(float& outX, float& outY)
+	{
+		std::vector<Rec::Call>& calls = Rec::Calls();
+		for (size_t i = 0; i < calls.size(); ++i)
+		{
+			if (calls[i].fn != "glBegin" || (int)calls[i].a[0] != 0x0007)   // GL_QUADS
+				continue;
+			for (size_t j = i + 1; j < calls.size(); ++j)
+			{
+				if (calls[j].fn == "glVertex2f")
+				{
+					outX = (float)calls[j].a[0];
+					outY = (float)calls[j].a[1];
+					return true;
+				}
+				if (calls[j].fn == "glEnd")
+					break;
+			}
+		}
+		return false;
 	}
 }
 
@@ -686,8 +746,9 @@ static void TestHealthBarsDrawn()
 	CHECK_TRUE(BuildWorld(), "frame gathered");
 	Rec::CurrentDC() = NULL;
 	Rec::Reset(0, 0, kVpW, kVpH);
-	Config::g_Settings.nameEsp   = false;
-	Config::g_Settings.healthEsp = true;
+	Config::g_Settings.nameEsp     = false;
+	Config::g_Settings.distanceEsp = false;
+	Config::g_Settings.healthEsp   = true;
 	HealthEsp::ResetDrawState();
 	HealthEsp::Draw();
 
@@ -699,8 +760,9 @@ static void TestHealthBarsDrawn()
 
 	// stacked under the name: both features on, bar y is below the name raster
 	Rec::Reset(0, 0, kVpW, kVpH);
-	Config::g_Settings.nameEsp   = true;
-	Config::g_Settings.healthEsp = true;
+	Config::g_Settings.nameEsp     = true;
+	Config::g_Settings.distanceEsp = false;
+	Config::g_Settings.healthEsp   = true;
 	NameEsp::ResetDrawState();
 	NameEsp::Draw();
 	HealthEsp::Draw();
@@ -712,9 +774,276 @@ static void TestHealthBarsDrawn()
 	CHECK_INT(HealthEsp::LastDrawStats().drawn, 0, "feature off -> no bars");
 }
 
+// =============================================================================================== //
+// DISTANCE ESP: the "NM" text, its row in the stack, and the scale + fade with range
+// =============================================================================================== //
+
+static void TestDistanceTagsDrawn()
+{
+	Section("DISTANCE ESP drawing (metres text on the head anchor when nothing else is on)");
+
+	CHECK_TRUE(BuildWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157A;   // a fresh context: every bucket must be baked
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp     = false;
+	Config::g_Settings.distanceEsp = true;
+	Config::g_Settings.healthEsp   = false;
+	DistanceEsp::ResetDrawState();
+	DistanceEsp::Draw();
+
+	// both in-view players are |vieworg - lerpOrigin| = sqrt(128^2 + 128^2 + 26^2) = 182.9
+	// away -> "183M"; the player behind the viewer is skipped
+	CHECK_INT(CountTextCalls("183M"), 4, "two tags, each drawn twice (drop shadow + text)");
+	CHECK_INT(CountTextCalls("Bitterman"), 0, "distance ESP alone prints no names");
+	CHECK_INT(CountTextCalls("Behind"), 0, "the player behind the viewer is not drawn");
+
+	// the six faces span FONT_HEIGHT down to kMinScale, baked for the fresh context
+	{
+		const std::vector<const Rec::Call*> bakes = Rec::All("CreateFontA");
+		CHECK_INT((int)bakes.size(), 6, "six font buckets baked");
+		const double heights[6] = { -14, -12, -10, -8, -6, -5 };
+		for (int i = 0; i < 6 && i < (int)bakes.size(); ++i)
+		{
+			char what[64];
+			snprintf(what, sizeof(what), "bucket %d baked at its height", i);
+			CHECK_NEAR(bakes[i]->a[0], heights[i], 0.001, what);
+		}
+	}
+
+	// position: centred on the head anchor's own row (no name above -> row 0), white with the
+	// 1px black drop shadow, clamped to the overlay like the name
+	const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+	const NameEsp::PlayerTag* b1 = FindTag(1);
+	const NameEsp::PlayerTag* b2 = FindTag(2);
+	CHECK_TRUE(b1 != NULL && b2 != NULL, "both tagged players present");
+	if (b1 && b2)
+	{
+		NameEsp::ScreenPoint p1, p2;
+		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, p1),
+		           "player 1 projects");
+		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b2->origin, p2),
+		           "player 2 projects");
+		float want1x = 0.0f, want1y = 0.0f, want2x = 0.0f, want2y = 0.0f;
+		ExpectedDistanceAt(p1, "183M", 0.0f, (float)FONT_HEIGHT, want1x, want1y);
+		ExpectedDistanceAt(p2, "183M", 0.0f, (float)FONT_HEIGHT, want2x, want2y);
+
+		int checked = 0;
+		const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+		for (size_t i = 0; i < texts.size(); ++i)
+		{
+			if (texts[i]->text != "183M")
+				continue;
+			const Rec::Call* pos = Rec::Prev(texts[i], "glRasterPos2f");
+			CHECK_TRUE(pos != NULL, "the distance text has a raster position");
+			if (!pos)
+				continue;
+			const bool isShadow = (texts[i]->rgb == 0x000000u);
+			// the two players sit at opposite edges (x 0 and x ~771), so the nearer expected x
+			// says which one this text belongs to
+			const bool isLeft = fabsf(pos->a[0] - want1x) <= fabsf(pos->a[0] - want2x);
+			const float wantX = isLeft ? want1x : want2x;
+			const float wantY = isLeft ? want1y : want2y;
+			CHECK_NEAR(pos->a[0], wantX + (isShadow ? 1.0f : 0.0f), 0.02, "raster x");
+			CHECK_NEAR(pos->a[1], wantY + (isShadow ? 1.0f : 0.0f), 0.02, "raster y");
+			if (!isShadow)
+			{
+				CHECK_UINT(texts[i]->rgb, 0xffffffu, "neutral white, not the team colour");
+				CHECK_TRUE(texts[i]->alpha > 0.0f && texts[i]->alpha < 1.0f,
+				           "fading in on the first frame");
+			}
+			++checked;
+		}
+		CHECK_INT(checked, 4, "all four issued texts were checked");
+	}
+
+	const DistanceEsp::DrawStats& st = DistanceEsp::LastDrawStats();
+	CHECK_INT(st.drawn, 2, "two tags drawn");
+	CHECK_INT(st.inView, 2, "drawn ahead, full brightness");
+	CHECK_INT(st.edge, 0, "none at the edge");
+	CHECK_INT(st.behind, 1, "one skipped behind the viewer");
+	CHECK_INT(st.faded, 0, "nothing faded out");
+
+	// feature off: nothing issued, stats zeroed
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.distanceEsp = false;
+	DistanceEsp::Draw();
+	CHECK_INT(Rec::Count("glCallLists"), 0, "feature off -> no text");
+	const DistanceEsp::DrawStats& z = DistanceEsp::LastDrawStats();
+	CHECK_INT(z.drawn, 0, "feature off -> zero drawn");
+	CHECK_INT(z.behind, 0, "feature off -> zero behind");
+}
+
+static void TestDistanceStackingWithAllThree()
+{
+	Section("DISTANCE ESP stacking (name, distance, health bar each in their own row)");
+
+	CHECK_TRUE(BuildWorld(), "frame gathered");
+	Rec::CurrentDC() = (void*)(size_t)0xD157B;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp     = true;
+	Config::g_Settings.distanceEsp = true;
+	Config::g_Settings.healthEsp   = true;
+	NameEsp::ResetDrawState();
+	DistanceEsp::ResetDrawState();
+	HealthEsp::ResetDrawState();
+	NameEsp::Draw();
+	DistanceEsp::Draw();
+	HealthEsp::Draw();
+
+	const NameEsp::PlayerTag* b1 = FindTag(1);
+	CHECK_TRUE(b1 != NULL, "player 1 is in the frame");
+	if (!b1)
+		return;
+	const NameEsp::Viewport vp = { 0, 0, kVpW, kVpH };
+	NameEsp::ScreenPoint p;
+	CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, p),
+	           "head projects");
+
+	// where each row should sit: the name on the anchor, the distance one row below it,
+	// the health bar on the last row, two rows below
+	float nameX = 0.0f, nameY = 0.0f, distX = 0.0f, distY = 0.0f;
+	ExpectedCentreAt(p, "Bitterman", nameX, nameY);
+	ExpectedDistanceAt(p, "183M", NameEsp::kEspRowHeight, (float)FONT_HEIGHT, distX, distY);
+
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	bool sawName = false, sawDist = false;
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		const Rec::Call* text = texts[i];
+		if (text->rgb == 0x000000u)
+			continue;                            // drop shadow
+		const Rec::Call* pos = Rec::Prev(text, "glRasterPos2f");
+		if (!pos)
+			continue;
+		if (text->text == "Bitterman" && !sawName)
+		{
+			CHECK_NEAR(pos->a[0], nameX, 0.02, "the name sits on the head anchor row");
+			CHECK_NEAR(pos->a[1], nameY, 0.02, "the name is at the anchor");
+			sawName = true;
+		}
+		if (text->text == "183M" && !sawDist)
+		{
+			CHECK_NEAR(pos->a[1], distY, 0.02, "the distance sits one row below the name");
+			CHECK_NEAR(pos->a[1] - nameY, (double)NameEsp::kEspRowHeight, 0.02,
+			           "exactly one row under the name, never overlapping it");
+			sawDist = true;
+		}
+	}
+	CHECK_TRUE(sawName, "the name was drawn");
+	CHECK_TRUE(sawDist, "the distance was drawn");
+
+	// the health bar - the first quad in the stream - is on the LAST row, two rows below
+	// the anchor, with the name and distance between it and the head
+	float barX = 0.0f, barY = 0.0f;
+	CHECK_TRUE(FirstQuadOrigin(barX, barY), "a health bar quad was issued");
+	CHECK_NEAR(barY, p.y + 2.0f * NameEsp::kEspRowHeight, 0.02,
+	           "with all three on, the bar is on the last row");
+	CHECK_NEAR(barY - nameY, 2.0f * (double)NameEsp::kEspRowHeight, 0.02,
+	           "bar exactly two rows below the name");
+}
+
+static void TestDistanceScaleAndFade()
+{
+	Section("DISTANCE ESP scales down and fades out with range");
+
+	// one bot 1500 units straight ahead: mid-fade, so neither the full-size face nor full
+	// opacity is what the tag goes out in
+	const float here[3]   = { 0.0f, 0.0f, 0.0f };
+	const float none[3]   = { 0.0f, 0.0f, 0.0f };
+	const float angles[3] = { 0.0f, 0.0f, 0.0f };
+
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(1000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Far\\t\\0", (const float[]){ 1500.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+	const NameEsp::PlayerTag* tag = FindTag(1);
+	CHECK_TRUE(tag != NULL, "the far player is in the frame");
+	if (!tag)
+		return;
+	{
+		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag->lerpOrigin);
+		CHECK_NEAR(tag->distance, want, 0.01, "distance is |vieworg - lerpOrigin|");
+	}
+
+	Rec::CurrentDC() = (void*)(size_t)0xD157C;
+	Rec::Reset(0, 0, kVpW, kVpH);
+	Config::g_Settings.nameEsp     = false;
+	Config::g_Settings.distanceEsp = true;
+	Config::g_Settings.healthEsp   = false;
+	DistanceEsp::ResetDrawState();
+
+	// first frame: the fresh context bakes all six faces, so this is where the tag's face
+	// base comes from (later frames reuse the lists)
+	DistanceEsp::Draw();
+	unsigned int wantBase = 0;
+	{
+		const std::vector<const Rec::Call*> bakes = Rec::All("CreateFontA");
+		CHECK_INT((int)bakes.size(), 6, "six font buckets baked for the fresh context");
+		const double heights[6] = { -14, -12, -10, -8, -6, -5 };
+		for (int i = 0; i < 6 && i < (int)bakes.size(); ++i)
+		{
+			char what[64];
+			snprintf(what, sizeof(what), "bucket %d baked at its height", i);
+			CHECK_NEAR(bakes[i]->a[0], heights[i], 0.001, what);
+		}
+		// the mid-range tag (scale 9.2px) must go out in the 10px face: the third bucket
+		wantBase = ListBaseOfBake(2) - 32;      // EmitText sets the list base to base - 32
+		CHECK_TRUE(wantBase != 0, "the 10px face has a list base");
+	}
+
+	// drive the fade-in ramp to completion (30 further frames x 16 ms > kFadeInMs), so the
+	// alpha left on the final frame is the distance fade alone
+	for (int i = 1; i <= 30; ++i)
+	{
+		CHECK_TRUE(NameEsp::Gather(1000 + i * 16, FakeEngine::Syscall()), "later frame gathered");
+		Rec::Reset(0, 0, kVpW, kVpH);
+		DistanceEsp::Draw();
+	}
+
+	const std::vector<const Rec::Call*> texts = Rec::All("glCallLists");
+	bool sawText = false;
+	for (size_t i = 0; i < texts.size(); ++i)
+	{
+		const Rec::Call* text = texts[i];
+		if (text->text != "1500M")
+			continue;
+		if (text->rgb == 0x000000u)
+			continue;                            // the drop shadow
+		sawText = true;
+		// scale 14 * (1 - t * 0.65) with t = (1500.2 - 400) / 2100 is 9.2px -> the 10px face
+		CHECK_UINT(text->listBase, wantBase, "the mid-range tag uses the scaled-down face");
+		// ... and the alpha is the distance fade (the fade-in ramp is finished)
+		const float t = (tag->distance - DistanceEsp::kFadeStartDist) /
+		               (DistanceEsp::kFadeEndDist - DistanceEsp::kFadeStartDist);
+		CHECK_NEAR(text->alpha, 1.0f - t, 0.01, "faded by the distance ramp");
+	}
+	CHECK_TRUE(sawText, "the far tag was drawn");
+
+	// and a player past the fade end is dropped entirely
+	FakeEngine::Reset();
+	NameEsp::Reset();
+	FakeEngine::SetSnapshotTime(2000);
+	FakeEngine::SetFovString("90");
+	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+	FakeEngine::SetPlayer(1, "\\n\\Gone\\t\\0", (const float[]){ 3000.0f, 0.0f, 0.0f });
+	CHECK_TRUE(NameEsp::Gather(2000, FakeEngine::Syscall()), "far frame gathered");
+	const NameEsp::PlayerTag* gone = FindTag(1);
+	CHECK_TRUE(gone != NULL, "the very far player is in the frame");
+	if (gone)
+		CHECK_TRUE(gone->distance > DistanceEsp::kFadeEndDist, "really past the fade end");
+	Rec::Reset(0, 0, kVpW, kVpH);
+	DistanceEsp::ResetDrawState();
+	DistanceEsp::Draw();
+	CHECK_INT(Rec::Count("glCallLists"), 0, "past the fade end: nothing issued");
+	CHECK_INT(DistanceEsp::LastDrawStats().faded, 1, "counted as faded, not drawn");
+}
+
 int main(void)
 {
-	printf("kutaQ3 hook tests - NAME ESP drawing (nameEsp.cpp + glText.cpp + glDraw.cpp)\n");
+	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + glText.cpp + glDraw.cpp)\n");
 
 	TestFontIsBuiltOnce();
 	TestOverlayState();
@@ -726,6 +1055,9 @@ int main(void)
 	TestDrawsNothingWhenItShouldNot();
 	TestFormatSpecifierName();
 	TestHealthBarsDrawn();
+	TestDistanceTagsDrawn();
+	TestDistanceStackingWithAllThree();
+	TestDistanceScaleAndFade();
 
 	CHECK_SUMMARY("gl");
 	return g_failed ? 1 : 0;

@@ -2,8 +2,9 @@
 // kutaQ3 hook - HEALTH ESP, GL half (see healthEsp.h for the overview)
 //
 // Renders a green-to-red 2D health bar above every other player, using the tags NameEsp::Gather()
-// already built. Runs from the hooked SwapBuffers, after NameEsp::Draw() so the bar can sit
-// underneath the name when both features are on.
+// already built. Runs from the hooked SwapBuffers, after NameEsp::Draw() and
+// DistanceEsp::Draw(); the bar sits on the last row of the NameEsp::ComputeEspRows() stack -
+// underneath the name and / or the distance text when those features are on.
 // =============================================================================================== //
 
 #include "healthEsp.h"
@@ -99,7 +100,11 @@ void HealthEsp::Draw()
 		return;
 
 	++s_frameSerial;
-	const bool nameEspOn = Config::g_Settings.nameEsp;
+
+	// The bar's row in the ESP stack: last row, under the name and / or the distance text
+	// (NameEsp::ComputeEspRows), so the three overlays never overlap on screen.
+	const NameEsp::EspRows rows =
+		NameEsp::ComputeEspRows(Config::g_Settings.nameEsp, Config::g_Settings.distanceEsp);
 
 	{
 		KUTAQ3_LEGACY_GL_STATE_GUARD();
@@ -180,7 +185,7 @@ void HealthEsp::Draw()
 			}
 
 			BarGeom bar;
-			if (!ComputeBar(tag, frame.view, vp, p, nameEspOn, bar) || !bar.visible)
+			if (!ComputeBar(tag, frame.view, vp, p, rows.bar, bar) || !bar.visible)
 			{
 				++s_stats.skipped;
 				continue;

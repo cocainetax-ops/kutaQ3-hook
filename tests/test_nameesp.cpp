@@ -13,6 +13,7 @@
 // =============================================================================================== //
 
 #include "nameEsp.h"
+#include "distanceEsp.h"
 #include "healthEsp.h"
 #include "fake_engine.h"
 
@@ -1218,16 +1219,17 @@ static void TestHealthEsp()
 		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag.origin, p),
 		           "head projects");
 		HealthEsp::BarGeom solo, stacked;
-		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p, false, solo),
+		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p, 0.0f, solo),
 		           "solo bar");
-		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p, true, stacked),
+		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p,
+		           NameEsp::kEspRowHeight, stacked),
 		           "stacked bar");
 		CHECK_TRUE(solo.visible && stacked.visible, "both bars visible");
 		CHECK_TRUE(!solo.confirmed && !stacked.confirmed,
 		         "a never-hit tag computes an estimated (hatched) bar");
 		CHECK_TRUE(stacked.w < solo.w, "stacked bar is thinner than solo");
 		CHECK_TRUE(stacked.h < solo.h, "stacked bar is shorter than solo");
-		CHECK_NEAR(stacked.y, p.y + HealthEsp::kNameStackOffset, 0.02,
+		CHECK_NEAR(stacked.y, p.y + NameEsp::kEspRowHeight, 0.02,
 		           "stacked bar sits under the name");
 		CHECK_NEAR(solo.y, p.y, 0.02, "solo bar sits on the head tag");
 		CHECK_NEAR(solo.x + solo.w * 0.5f, p.x, 1.0, "solo bar is centred on the tag");
@@ -1246,6 +1248,115 @@ static void TestHealthEsp()
 		CHECK_TRUE(solo.w <= modelW + 0.01f, "solo bar is not wider than the player");
 		CHECK_TRUE(stacked.w <= modelW + 0.01f, "stacked bar is not wider than the player");
 		CHECK_NEAR(solo.fillW, solo.w, 0.05, "full HP fills the bar");
+	}
+}
+
+// =============================================================================================== //
+// DISTANCE ESP: the "128M" text, the distance fade, and the row stack the three ESP overlays
+// share (the bar geometry above already checks the bar's half of it).
+// =============================================================================================== //
+static void TestDistanceEsp()
+{
+	Section("DISTANCE ESP - text format, distance fade, row stack");
+
+	// "128M": the rounded metre count + "M", digits and M only, so the GL::Font display
+	// lists (glyphs 32..127) always hold it
+	char buf[8];
+	CHECK_TRUE(DistanceEsp::FormatDistance(128.0f, buf), "whole distance formats");
+	CHECK_STR(buf, "128M", "whole distance keeps the number + M");
+	CHECK_TRUE(DistanceEsp::FormatDistance(128.4f, buf), "sub-metre distance formats");
+	CHECK_STR(buf, "128M", "rounds to the nearest metre");
+	CHECK_TRUE(DistanceEsp::FormatDistance(128.5f, buf), "half metre formats");
+	CHECK_STR(buf, "129M", "half rounds up");
+	CHECK_TRUE(DistanceEsp::FormatDistance(0.4f, buf), "small distance formats");
+	CHECK_STR(buf, "0M", "under half a metre is zero");
+	CHECK_TRUE(DistanceEsp::FormatDistance(9999.6f, buf), "large distance formats");
+	CHECK_STR(buf, "10000M", "five digits + M fits the buffer");
+	CHECK_TRUE(!DistanceEsp::FormatDistance(-1.0f, buf), "negative rejected");
+	CHECK_TRUE(!DistanceEsp::FormatDistance(0.0f / 0.0f, buf), "NaN rejected");
+
+	// the fade: full size and opacity up close, min scale / alpha 0 far away
+	{
+		float scale = 0.0f, alpha = 0.0f;
+		DistanceEsp::DistanceFade(0.0f, scale, alpha);
+		CHECK_NEAR(scale, 1.0f, 1e-6, "close: full scale");
+		CHECK_NEAR(alpha, 1.0f, 1e-6, "close: full alpha");
+		DistanceEsp::DistanceFade(DistanceEsp::kFadeStartDist, scale, alpha);
+		CHECK_NEAR(scale, 1.0f, 1e-6, "fade start: full scale");
+		CHECK_NEAR(alpha, 1.0f, 1e-6, "fade start: full alpha");
+		DistanceEsp::DistanceFade(DistanceEsp::kFadeEndDist, scale, alpha);
+		CHECK_NEAR(scale, DistanceEsp::kMinScale, 1e-6, "fade end: min scale");
+		CHECK_NEAR(alpha, 0.0f, 1e-6, "fade end: alpha 0");
+		DistanceEsp::DistanceFade(DistanceEsp::kFadeEndDist + 5000.0f, scale, alpha);
+		CHECK_NEAR(scale, DistanceEsp::kMinScale, 1e-6, "past the fade end holds the min scale");
+		CHECK_NEAR(alpha, 0.0f, 1e-6, "past the fade end holds alpha 0");
+		DistanceEsp::DistanceFade((DistanceEsp::kFadeStartDist + DistanceEsp::kFadeEndDist) * 0.5f,
+		                         scale, alpha);
+		CHECK_TRUE(scale > DistanceEsp::kMinScale && scale < 1.0f, "mid fade interpolates scale");
+		CHECK_TRUE(alpha > 0.0f && alpha < 1.0f, "mid fade interpolates alpha");
+
+		// ... and the ramp must agree with the HEALTH ESP's at every point, so the two
+		// overlays fade together
+		const float samples[4] = { 100.0f, 950.0f, 1600.0f, 2501.0f };
+		for (int i = 0; i < 4; ++i)
+		{
+			float hs = 0.0f, ha = 0.0f, ds = 0.0f, da = 0.0f;
+			HealthEsp::DistanceFade(samples[i], hs, ha);
+			DistanceEsp::DistanceFade(samples[i], ds, da);
+			char what[64];
+			snprintf(what, sizeof(what), "sample %d: same ramp as the health ESP (scale)", i);
+			CHECK_NEAR(ds, hs, 1e-6, what);
+			snprintf(what, sizeof(what), "sample %d: same ramp as the health ESP (alpha)", i);
+			CHECK_NEAR(da, ha, 1e-6, what);
+		}
+	}
+
+	// the row stack: every combination of the three features
+	{
+		NameEsp::EspRows r;
+
+		r = NameEsp::ComputeEspRows(false, false);   // health only
+		CHECK_NEAR(r.name, 0.0f, 1e-6, "health only: name at the anchor");
+		CHECK_NEAR(r.distance, 0.0f, 1e-6, "health only: distance at the anchor");
+		CHECK_NEAR(r.bar, 0.0f, 1e-6, "health only: bar at the anchor");
+
+		r = NameEsp::ComputeEspRows(true, false);    // name + health
+		CHECK_NEAR(r.name, 0.0f, 1e-6, "name on top");
+		CHECK_NEAR(r.bar, NameEsp::kEspRowHeight, 1e-6, "bar directly under the name");
+
+		r = NameEsp::ComputeEspRows(false, true);    // distance + health
+		CHECK_NEAR(r.distance, 0.0f, 1e-6, "no name: distance at the anchor");
+		CHECK_NEAR(r.bar, NameEsp::kEspRowHeight, 1e-6, "no name: bar under the distance");
+
+		r = NameEsp::ComputeEspRows(true, true);     // name + distance + health
+		CHECK_NEAR(r.name, 0.0f, 1e-6, "all three: name on top");
+		CHECK_NEAR(r.distance, NameEsp::kEspRowHeight, 1e-6, "all three: distance under the name");
+		CHECK_NEAR(r.bar, 2.0f * NameEsp::kEspRowHeight, 1e-6, "all three: bar on the last row");
+	}
+
+	// the value the fade is driven by: |cg.refdef.vieworg - cent->lerpOrigin|, gathered per tag
+	{
+		const float here[3]   = { 0.0f, 0.0f, 0.0f };
+		const float none[3]   = { 0.0f, 0.0f, 0.0f };
+		const float angles[3] = { 0.0f, 0.0f, 0.0f };
+		const float botAt[3]  = { 300.0f, 400.0f, 8.0f };
+
+		FakeEngine::Reset();
+		NameEsp::Reset();
+		FakeEngine::SetSnapshotTime(1000);
+		FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
+		FakeEngine::SetPlayer(1, "\\n\\FarOut\\t\\0", botAt);
+		CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
+		CHECK_INT(NameEsp::Current().playerCount, 1, "one tag");
+		const NameEsp::PlayerTag& tag = NameEsp::Current().players[0];
+		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag.lerpOrigin);
+		CHECK_NEAR(tag.distance, want, 0.05, "tag distance is |vieworg - lerpOrigin|");
+		// view at (0,0,26), bot feet at (300,400,8): sqrt(300^2 + 400^2 + 18^2) = 500.32...
+		CHECK_NEAR(tag.distance, sqrtf(300.0f * 300.0f + 400.0f * 400.0f + 18.0f * 18.0f), 0.1,
+		         "the worked value");
+		char text[8];
+		CHECK_TRUE(DistanceEsp::FormatDistance(tag.distance, text), "the gathered distance formats");
+		CHECK_STR(text, "500M", "and it is the rounded metre count + M");
 	}
 }
 
@@ -1270,6 +1381,7 @@ int main(void)
 	TestTeamColors();
 	TestWorldThenHudCapture();
 	TestHealthEsp();
+	TestDistanceEsp();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;
