@@ -1256,6 +1256,11 @@ static void TestWeaponIconChips()
 	CHECK_INT(st.inView, 2, "both ahead of the viewer");
 	CHECK_INT(st.behind, 1, "one skipped behind the viewer");
 	CHECK_INT(st.iconsMissing, 2, "both in-view icons fell back to the chip");
+	// and the chip is blamed on the right thing: off Windows there is nowhere to look for the
+	// .tga, so both are "not in the paks" - not, say, a decode failure or a GL refusal
+	CHECK_INT(st.iconsNotInPak, 2, "... because there is no pak to read on this host");
+	CHECK_INT(st.iconsBadData, 0, "... not because a file was unreadable");
+	CHECK_INT(st.iconsNoUpload, 0, "... and not because GL refused a texture");
 
 	// the WP_NONE player drew nothing, armed or not
 	CHECK_INT(st.drawn, 2, "the WP_NONE player has no icon either");

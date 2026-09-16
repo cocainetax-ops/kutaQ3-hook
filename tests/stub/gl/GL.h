@@ -42,6 +42,12 @@ typedef double         GLclampd;
 #define GL_SRC_ALPHA           0x0302
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
 #define GL_RGBA                0x1908
+#define GL_TEXTURE_MAG_FILTER  0x2800
+#define GL_TEXTURE_MIN_FILTER  0x2801
+#define GL_LINEAR              0x2601
+#define GL_TEXTURE_ENV         0x2300
+#define GL_TEXTURE_ENV_MODE    0x2200
+#define GL_MODULATE            0x2100
 
 // ---- recording entry points --------------------------------------------------------------------
 inline void glGetIntegerv(GLenum pname, GLint* params)
@@ -175,6 +181,16 @@ inline void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsiz
 {
 	Rec::Push4("glTexImage2D", (double)internalFormat, (double)width, (double)height,
 	           (double)(data != 0 ? 1 : 0));
+}
+
+inline void glTexParameteri(GLenum target, GLenum pname, GLint param)
+{
+	Rec::Push3("glTexParameteri", (double)target, (double)pname, (double)param);
+}
+
+inline void glTexEnvi(GLenum target, GLenum pname, GLint param)
+{
+	Rec::Push3("glTexEnvi", (double)target, (double)pname, (double)param);
 }
 
 inline void glTexCoord2f(GLfloat u, GLfloat v) { Rec::Push2("glTexCoord2f", u, v); }

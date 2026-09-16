@@ -9,7 +9,9 @@
 #           headers, so this target fails to *compile* when the mirror drifts.
 #   core    nameEspCore.cpp (the real file the DLL is built from) driven by a fake engine syscall
 #           trampoline, with the projection cross-checked against the engine's own AngleVectors()
-#           compiled out of SDK/code/game/q_math.c.
+#           compiled out of SDK/code/game/q_math.c - and WEAPON ESP's icon pipeline out of
+#           weaponEspCore.cpp: PakReadEntry and DecodeTga against hand-built pak archives and
+#           real zlib streams (see tests/gen_icon_fixtures.py).
 #   vm      vmFind.cpp (again the real file) - the scanners that find the cgame VM record and the
 #           cgame's gameState copy inside quake3.exe, driven with records built the way VM_Create()
 #           and CL_ParseGamestate() build them.
@@ -45,7 +47,7 @@ VM_SRCS   := test_vmfind.cpp $(ROOT)/vmFind.cpp
 
 .PHONY: all check clean
 
-all: $(BIN)/mirror $(BIN)/core $(BIN)/gl $(BIN)/vm $(BIN)/vmhook.o $(BIN)/weaponesp.o
+all: $(BIN)/mirror $(BIN)/core $(BIN)/vm $(BIN)/gl $(BIN)/vmhook.o $(BIN)/weaponesp.o
 
 check: all
 	@echo "=== mirror (q3sdk.h + vmFind.h vs the SDK headers) ==="

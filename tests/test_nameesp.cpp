@@ -20,6 +20,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -1751,6 +1752,953 @@ static void TestWeaponFadeMatchesOtherEsp()
 	CHECK_TRUE(scale > 0.67f && scale < 0.69f, "half scaled at the midpoint");
 }
 
+// The deflate fixtures: zlib 1.2.13, raw -15 windows, generated from MakeIcon()'s bytes (so
+// a test can inflate one and compare it against the TGA it builds itself). They cover the
+// three DEFLATE block types, and TestWeaponIconPakRead() asserts each fixture's block type
+// so a regeneration with different settings cannot quietly drop one. Regenerate with
+// tests/gen_icon_fixtures.py (kept next to the tests for exactly that).
+
+// 32x32, level 9: what a pak packager produces - a DYNAMIC Huffman block.
+static const unsigned char kDeflateIconDynamic[] = {
+	0xed, 0x97, 0x1f, 0x97, 0x34, 0xbb, 0x16, 0x87, 0xcf, 0xba, 0x9f, 0xa2,
+	0xb1, 0xb0, 0xb0, 0xe0, 0x85, 0x82, 0x81, 0x82, 0x81, 0x82, 0x81, 0x40,
+	0x43, 0xa0, 0x21, 0xd0, 0x10, 0x68, 0x08, 0x34, 0x04, 0x1a, 0x02, 0x0d,
+	0x81, 0x86, 0x40, 0x43, 0xa0, 0x21, 0xd0, 0x10, 0x68, 0x08, 0x0c, 0x04,
+	0x06, 0x0a, 0x06, 0x0a, 0x5e, 0x28, 0x2c, 0x6c, 0x9c, 0x6f, 0xf1, 0xdc,
+	0xb5, 0xee, 0x5a, 0xd7, 0xe6, 0xfc, 0xbd, 0xe7, 0xda, 0xf9, 0xed, 0x0f,
+	0xf0, 0x3c, 0xb4, 0xf7, 0x6f, 0xff, 0xf2, 0xcb, 0xbf, 0x7e, 0xf9, 0x6f,
+	0x9a, 0xff, 0xcc, 0x3f, 0xf9, 0xe3, 0x49, 0x5f, 0x92, 0xfb, 0x97, 0x22,
+	0x7f, 0x69, 0x1e, 0x5f, 0x86, 0xf2, 0x65, 0x79, 0xff, 0x72, 0xd4, 0x2f,
+	0xcf, 0xc7, 0x57, 0x60, 0xfa, 0x8a, 0x7c, 0x7e, 0x25, 0xe6, 0xaf, 0xcc,
+	0xdf, 0xc9, 0xbd, 0x3e, 0x47, 0xe2, 0x53, 0x70, 0x7b, 0x4a, 0xd2, 0x53,
+	0x71, 0x7f, 0x6a, 0xf2, 0xd3, 0xf0, 0x78, 0x5a, 0xca, 0xd3, 0xf1, 0xfe,
+	0xf4, 0xd4, 0x67, 0xe0, 0xe3, 0x19, 0x99, 0x9e, 0x89, 0xcf, 0x67, 0x66,
+	0x7e, 0x16, 0x7e, 0x3e, 0xeb, 0xff, 0xec, 0x71, 0x59, 0x07, 0xc2, 0x3a,
+	0x72, 0x5d, 0x05, 0x71, 0x95, 0xdc, 0x56, 0x45, 0x5a, 0x35, 0xf7, 0xd5,
+	0x90, 0x57, 0xcb, 0x63, 0x75, 0x94, 0xd5, 0xf3, 0xbe, 0x06, 0xea, 0x1a,
+	0xf9, 0x58, 0x13, 0xd3, 0x9a, 0xf9, 0x5c, 0x0b, 0xf3, 0x5a, 0xf9, 0xb9,
+	0x4e, 0x7f, 0xd9, 0xe1, 0xbc, 0xf4, 0xf8, 0x65, 0xe0, 0xb2, 0x8c, 0x84,
+	0x45, 0x70, 0x5d, 0x24, 0x71, 0x51, 0xdc, 0x16, 0x4d, 0x5a, 0x0c, 0xf7,
+	0xc5, 0x92, 0x17, 0xc7, 0x63, 0xf1, 0x94, 0x25, 0xf0, 0xbe, 0x44, 0xea,
+	0x92, 0xf8, 0x58, 0x32, 0xd3, 0x52, 0xf8, 0x5c, 0x2a, 0xf3, 0x32, 0xf1,
+	0x73, 0x99, 0xff, 0xb4, 0xc3, 0x69, 0xee, 0x70, 0x73, 0xcf, 0x79, 0x1e,
+	0xf0, 0xf3, 0xc8, 0x65, 0x16, 0x84, 0x59, 0x72, 0x9d, 0x15, 0x71, 0xd6,
+	0xdc, 0x66, 0x43, 0x9a, 0x2d, 0xf7, 0xd9, 0x91, 0x67, 0xcf, 0x63, 0x0e,
+	0x94, 0x39, 0xf2, 0x3e, 0x27, 0xea, 0x9c, 0xf9, 0x98, 0x0b, 0xd3, 0x5c,
+	0xf9, 0x9c, 0x27, 0xe6, 0x79, 0xe6, 0xe7, 0xbc, 0xfc, 0x61, 0x87, 0xe3,
+	0xd4, 0x62, 0xa7, 0x8e, 0xd3, 0xd4, 0xe3, 0xa6, 0x81, 0xf3, 0x34, 0xe2,
+	0x27, 0xc1, 0x65, 0x92, 0x84, 0x49, 0x71, 0x9d, 0x34, 0x71, 0x32, 0xdc,
+	0x26, 0x4b, 0x9a, 0x1c, 0xf7, 0xc9, 0x93, 0xa7, 0xc0, 0x63, 0x8a, 0x94,
+	0x29, 0xf1, 0x3e, 0x65, 0xea, 0x54, 0xf8, 0x98, 0x2a, 0xd3, 0x34, 0xf1,
+	0x39, 0xcd, 0xcc, 0xd3, 0xc2, 0xcf, 0x69, 0xfd, 0x5d, 0x87, 0x43, 0x6d,
+	0x30, 0xb5, 0xe5, 0x58, 0x3b, 0x6c, 0xed, 0x39, 0xd5, 0x01, 0x57, 0x47,
+	0xce, 0x55, 0xe0, 0xab, 0xe4, 0x52, 0x15, 0xa1, 0x6a, 0xae, 0xd5, 0x10,
+	0xab, 0xe5, 0x56, 0x1d, 0xa9, 0x7a, 0xee, 0x35, 0x90, 0x6b, 0xe4, 0x51,
+	0x13, 0xa5, 0x66, 0xde, 0x6b, 0xa1, 0xd6, 0xca, 0x47, 0x9d, 0x98, 0xea,
+	0xcc, 0x67, 0x5d, 0x98, 0xeb, 0xca, 0xcf, 0xfa, 0xfc, 0x4d, 0x07, 0x5d,
+	0x1a, 0x0e, 0xa5, 0xc5, 0x94, 0x8e, 0x63, 0xe9, 0xb1, 0x65, 0xe0, 0x54,
+	0x46, 0x5c, 0x11, 0x9c, 0x8b, 0xc4, 0x17, 0xc5, 0xa5, 0x68, 0x42, 0x31,
+	0x5c, 0x8b, 0x25, 0x16, 0xc7, 0xad, 0x78, 0x52, 0x09, 0xdc, 0x4b, 0x24,
+	0x97, 0xc4, 0xa3, 0x64, 0x4a, 0x29, 0xbc, 0x97, 0x4a, 0x2d, 0x13, 0x1f,
+	0x65, 0x66, 0x2a, 0x0b, 0x9f, 0x65, 0x65, 0x2e, 0xbf, 0xce, 0x57, 0x79,
+	0xc3, 0x3e, 0x37, 0xe8, 0xdc, 0x72, 0xc8, 0x1d, 0x26, 0xf7, 0x1c, 0xf3,
+	0x80, 0xcd, 0x23, 0xa7, 0x2c, 0x70, 0x59, 0x72, 0xce, 0x0a, 0x9f, 0x35,
+	0x97, 0x6c, 0x08, 0xd9, 0x72, 0xcd, 0x8e, 0x98, 0x3d, 0xb7, 0x1c, 0x48,
+	0x39, 0x72, 0xcf, 0x89, 0x9c, 0x33, 0x8f, 0x5c, 0x28, 0xb9, 0xf2, 0x9e,
+	0x27, 0x6a, 0x9e, 0xf9, 0xc8, 0x0b, 0x53, 0x5e, 0xf9, 0xcc, 0x4f, 0xe6,
+	0xfc, 0xf5, 0xad, 0xc3, 0x2e, 0x6d, 0x50, 0xa9, 0x61, 0x9f, 0x5a, 0x74,
+	0xea, 0x38, 0xa4, 0x1e, 0x93, 0x06, 0x8e, 0x69, 0xc4, 0x26, 0xc1, 0x29,
+	0x49, 0x5c, 0x52, 0x9c, 0x93, 0xc6, 0x27, 0xc3, 0x25, 0x59, 0x42, 0x72,
+	0x5c, 0x93, 0x27, 0xa6, 0xc0, 0x2d, 0x45, 0x52, 0x4a, 0xdc, 0x53, 0x26,
+	0xa7, 0xc2, 0x23, 0x55, 0x4a, 0x9a, 0x78, 0x4f, 0x33, 0x35, 0x2d, 0x7c,
+	0xa4, 0x95, 0x29, 0x3d, 0xf9, 0x4c, 0xdf, 0xf3, 0x65, 0xdc, 0xb0, 0x8b,
+	0x0d, 0x2a, 0xb6, 0xec, 0x63, 0x87, 0x8e, 0x3d, 0x87, 0x38, 0x60, 0xe2,
+	0xc8, 0x31, 0x0a, 0x6c, 0x94, 0x9c, 0xa2, 0xc2, 0x45, 0xcd, 0x39, 0x1a,
+	0x7c, 0xb4, 0x5c, 0xa2, 0x23, 0x44, 0xcf, 0x35, 0x06, 0x62, 0x8c, 0xdc,
+	0x62, 0x22, 0xc5, 0xcc, 0x3d, 0x16, 0x72, 0xac, 0x3c, 0xe2, 0x44, 0x89,
+	0x33, 0xef, 0x71, 0xa1, 0xc6, 0x95, 0x8f, 0xf8, 0x64, 0x8a, 0xdf, 0xf3,
+	0xb7, 0x61, 0x83, 0x0c, 0x0d, 0xbb, 0xd0, 0xa2, 0x42, 0xc7, 0x3e, 0xf4,
+	0xe8, 0x30, 0x70, 0x08, 0x23, 0x26, 0x08, 0x8e, 0x41, 0x62, 0x83, 0xe2,
+	0x14, 0x34, 0x2e, 0x18, 0xce, 0xc1, 0xe2, 0x83, 0xe3, 0x12, 0x3c, 0x21,
+	0x04, 0xae, 0x21, 0x12, 0x43, 0xe2, 0x16, 0x32, 0x29, 0x14, 0xee, 0xa1,
+	0x92, 0xc3, 0xc4, 0x23, 0xcc, 0x94, 0xb0, 0xf0, 0x1e, 0x56, 0x6a, 0x78,
+	0xf2, 0x11, 0xbe, 0xe7, 0x0b, 0xbf, 0x61, 0xeb, 0x1b, 0xa4, 0x6f, 0xd9,
+	0xf9, 0x0e, 0xe5, 0x7b, 0xf6, 0x7e, 0x40, 0xfb, 0x91, 0x83, 0x17, 0x18,
+	0x2f, 0x39, 0x7a, 0x85, 0xf5, 0x9a, 0x93, 0x37, 0x38, 0x6f, 0x39, 0x7b,
+	0x87, 0xf7, 0x9e, 0x8b, 0x0f, 0x04, 0x1f, 0xb9, 0xfa, 0x44, 0xf4, 0x99,
+	0x9b, 0x2f, 0x24, 0x5f, 0xb9, 0xfb, 0x89, 0xec, 0x67, 0x1e, 0x7e, 0xa1,
+	0xf8, 0x95, 0x77, 0xff, 0xa4, 0xfa, 0xef, 0xf9, 0x6f, 0x6e, 0x83, 0x70,
+	0x0d, 0x5b, 0xd7, 0x22, 0x5d, 0xc7, 0xce, 0xf5, 0x28, 0x37, 0xb0, 0x77,
+	0x23, 0xda, 0x09, 0x0e, 0x4e, 0x62, 0x9c, 0xe2, 0xe8, 0x34, 0xd6, 0x19,
+	0x4e, 0xce, 0xe2, 0x9c, 0xe3, 0xec, 0x3c, 0xde, 0x05, 0x2e, 0x2e, 0x12,
+	0x5c, 0xe2, 0xea, 0x32, 0xd1, 0x15, 0x6e, 0xae, 0x92, 0xdc, 0xc4, 0xdd,
+	0xcd, 0x64, 0xb7, 0xf0, 0x70, 0x2b, 0xc5, 0x3d, 0x79, 0x77, 0xdf, 0xf3,
+	0x47, 0xbb, 0xe1, 0xcd, 0x36, 0x08, 0xdb, 0xb2, 0xb5, 0x1d, 0xd2, 0xf6,
+	0xec, 0xec, 0x80, 0xb2, 0x23, 0x7b, 0x2b, 0xd0, 0x56, 0x72, 0xb0, 0x0a,
+	0x63, 0x35, 0x47, 0x6b, 0xb0, 0xd6, 0x72, 0xb2, 0x0e, 0x67, 0x3d, 0x67,
+	0x1b, 0xf0, 0x36, 0x72, 0xb1, 0x89, 0x60, 0x33, 0x57, 0x5b, 0x88, 0xb6,
+	0x72, 0xb3, 0x13, 0xc9, 0xce, 0xdc, 0xed, 0x42, 0xb6, 0x2b, 0x0f, 0xfb,
+	0xa4, 0xd8, 0xef, 0xf9, 0xaf, 0x66, 0xc3, 0x68, 0x1a, 0xde, 0x4c, 0x8b,
+	0x30, 0x1d, 0x5b, 0xd3, 0x23, 0xcd, 0xc0, 0xce, 0x8c, 0x28, 0x23, 0xd8,
+	0x1b, 0x89, 0x36, 0x8a, 0x83, 0xd1, 0x18, 0x63, 0x38, 0x1a, 0x8b, 0x35,
+	0x8e, 0x93, 0xf1, 0x38, 0x13, 0x38, 0x9b, 0x88, 0x37, 0x89, 0x8b, 0xc9,
+	0x04, 0x53, 0xb8, 0x9a, 0x4a, 0x34, 0x13, 0x37, 0x33, 0x93, 0xcc, 0xc2,
+	0xdd, 0xac, 0x64, 0xf3, 0xe4, 0x61, 0xbe, 0xe7, 0x0f, 0x7a, 0xc3, 0xab,
+	0x6e, 0x18, 0x75, 0xcb, 0x9b, 0xee, 0x10, 0xba, 0x67, 0xab, 0x07, 0xa4,
+	0x1e, 0xd9, 0x69, 0x81, 0xd2, 0x92, 0xbd, 0x56, 0x68, 0xad, 0x39, 0x68,
+	0x83, 0xd1, 0x96, 0xa3, 0x76, 0x58, 0xed, 0x39, 0xe9, 0x80, 0xd3, 0x91,
+	0xb3, 0x4e, 0x78, 0x9d, 0xb9, 0xe8, 0x42, 0xd0, 0x95, 0xab, 0x9e, 0x88,
+	0x7a, 0xe6, 0xa6, 0x17, 0x92, 0x5e, 0xb9, 0xeb, 0x27, 0x59, 0x7f, 0xcf,
+	0x7f, 0x51, 0x1b, 0x06, 0xd5, 0xf0, 0xaa, 0x5a, 0x46, 0xd5, 0xf1, 0xa6,
+	0x7a, 0x84, 0x1a, 0xd8, 0xaa, 0x11, 0xa9, 0x04, 0x3b, 0x25, 0x51, 0x4a,
+	0xb1, 0x57, 0x1a, 0xad, 0x0c, 0x07, 0x65, 0x31, 0xca, 0x71, 0x54, 0x1e,
+	0xab, 0x02, 0x27, 0x15, 0x71, 0x2a, 0x71, 0x56, 0x19, 0xaf, 0x0a, 0x17,
+	0x55, 0x09, 0x6a, 0xe2, 0xaa, 0x66, 0xa2, 0x5a, 0xb8, 0xa9, 0x95, 0xa4,
+	0x9e, 0xdc, 0xd5, 0xf7, 0xfc, 0x5e, 0x6e, 0x78, 0x91, 0x0d, 0x83, 0x6c,
+	0x79, 0x95, 0x1d, 0xa3, 0xec, 0x79, 0x93, 0x03, 0x42, 0x8e, 0x6c, 0xa5,
+	0x40, 0x4a, 0xc9, 0x4e, 0x2a, 0x94, 0xd4, 0xec, 0xa5, 0x41, 0x4b, 0xcb,
+	0x41, 0x3a, 0x8c, 0xf4, 0x1c, 0x65, 0xc0, 0xca, 0xc8, 0x49, 0x26, 0x9c,
+	0xcc, 0x9c, 0x65, 0xc1, 0xcb, 0xca, 0x45, 0x4e, 0x04, 0x39, 0x73, 0x95,
+	0x0b, 0x51, 0xae, 0xdc, 0xe4, 0x93, 0x24, 0xbf, 0x7e, 0x75, 0x07, 0xf7,
+	0xa2, 0xe1, 0x45, 0xb4, 0x0c, 0xa2, 0xe3, 0x55, 0xf4, 0x8c, 0x62, 0xe0,
+	0x4d, 0x8c, 0x08, 0x21, 0xd8, 0x0a, 0x89, 0x14, 0x8a, 0x9d, 0xd0, 0x28,
+	0x61, 0xd8, 0x0b, 0x8b, 0x16, 0x8e, 0x83, 0xf0, 0x18, 0x11, 0x38, 0x8a,
+	0x88, 0x15, 0x89, 0x93, 0xc8, 0x38, 0x51, 0x38, 0x8b, 0x8a, 0x17, 0x13,
+	0x17, 0x31, 0x13, 0xc4, 0xc2, 0x55, 0xac, 0x44, 0xf1, 0xdb, 0xf7, 0xe7,
+	0xc7, 0xd8, 0xd0, 0x8f, 0x2d, 0x2f, 0x63, 0xc7, 0x30, 0xf6, 0xbc, 0x8e,
+	0x03, 0xe3, 0x38, 0xf2, 0x36, 0x0a, 0xc4, 0x28, 0xd9, 0x8e, 0x0a, 0x39,
+	0x6a, 0x76, 0xa3, 0x41, 0x8d, 0x96, 0xfd, 0xe8, 0xd0, 0xa3, 0xe7, 0x30,
+	0x06, 0xcc, 0x18, 0x39, 0x8e, 0x09, 0x3b, 0x66, 0x4e, 0x63, 0xc1, 0x8d,
+	0x95, 0xf3, 0x38, 0xe1, 0xc7, 0x99, 0xcb, 0xb8, 0x10, 0xc6, 0x95, 0xeb,
+	0xf8, 0xfc, 0xdd, 0x1b, 0xfc, 0x63, 0x68, 0xe9, 0x87, 0x8e, 0x97, 0xa1,
+	0x67, 0x18, 0x06, 0x5e, 0x87, 0x91, 0x71, 0x10, 0xbc, 0x0d, 0x12, 0x31,
+	0x28, 0xb6, 0x83, 0x46, 0x0e, 0x86, 0xdd, 0x60, 0x51, 0x83, 0x63, 0x3f,
+	0x78, 0xf4, 0x10, 0x38, 0x0c, 0x11, 0x33, 0x24, 0x8e, 0x43, 0xc6, 0x0e,
+	0x85, 0xd3, 0x50, 0x71, 0xc3, 0xc4, 0x79, 0x98, 0xf1, 0xc3, 0xc2, 0x65,
+	0x58, 0xff, 0x70, 0x07, 0xf9, 0xd1, 0x77, 0xf4, 0x7d, 0xcf, 0x4b, 0x3f,
+	0x30, 0xf4, 0x23, 0xaf, 0xbd, 0x60, 0xec, 0x25, 0x6f, 0xbd, 0x42, 0xf4,
+	0x9a, 0x6d, 0x6f, 0x90, 0xbd, 0x65, 0xd7, 0x3b, 0x54, 0xef, 0xd9, 0xf7,
+	0x01, 0xdd, 0x47, 0x0e, 0x7d, 0xc2, 0xf4, 0x99, 0x63, 0x5f, 0xb0, 0x7d,
+	0xe5, 0xd4, 0x4f, 0xb8, 0x7e, 0xe6, 0xdc, 0x2f, 0x7f, 0xba, 0x83, 0xfd,
+	0xe8, 0x7a, 0xfa, 0x6e, 0xe0, 0xa5, 0x1b, 0x19, 0x3a, 0xc1, 0x6b, 0x27,
+	0x19, 0x3b, 0xc5, 0x5b, 0xa7, 0x11, 0x9d, 0x61, 0xdb, 0x59, 0x64, 0xe7,
+	0xd8, 0x75, 0x1e, 0xd5, 0x05, 0xf6, 0x5d, 0x44, 0x77, 0x89, 0x43, 0x97,
+	0x31, 0x5d, 0xe1, 0xd8, 0x55, 0x6c, 0x37, 0x71, 0xea, 0xe6, 0xbf, 0xdc,
+	0x41, 0x7f, 0xb4, 0x03, 0x7d, 0x3b, 0xf2, 0xd2, 0x0a, 0x86, 0x56, 0xf2,
+	0xda, 0x2a, 0xc6, 0x56, 0xf3, 0xd6, 0x1a, 0x44, 0x6b, 0xd9, 0xb6, 0x0e,
+	0xd9, 0x7a, 0x76, 0x6d, 0x40, 0xb5, 0x91, 0x7d, 0x9b, 0xd0, 0x6d, 0xe6,
+	0xd0, 0x16, 0x4c, 0x5b, 0x39, 0xb6, 0xd3, 0xff, 0xdc, 0xc1, 0x7f, 0x34,
+	0x23, 0x7d, 0x23, 0x78, 0x69, 0x24, 0x43, 0xa3, 0x78, 0x6d, 0x34, 0x63,
+	0x63, 0x78, 0x6b, 0x2c, 0xa2, 0x71, 0x6c, 0x1b, 0x8f, 0x6c, 0x02, 0xbb,
+	0x26, 0xa2, 0x9a, 0xc4, 0xbe, 0xc9, 0xe8, 0xa6, 0x70, 0x68, 0xea, 0xdf,
+	0xfa, 0x87, 0xf4, 0x1b, 0xc9, 0xcb, 0x46, 0x31, 0x6c, 0x34, 0xaf, 0x1b,
+	0xc3, 0xb8, 0xb1, 0xbc, 0x6d, 0x1c, 0x62, 0xe3, 0xd9, 0x6e, 0x02, 0x72,
+	0x13, 0xd9, 0x6d, 0x12, 0x6a, 0xf3, 0xf7, 0xfe, 0x3f, 0xff, 0xe4, 0xff,
+	0x97, 0x7f, 0x03,
+};
+
+// 8x8, level 0: STORED deflate blocks - a method-8 entry that is not Huffman coded at all.
+static const unsigned char kDeflateIconStored[] = {
+	0x01, 0x12, 0x01, 0xed, 0xfe, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x20, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x20, 0x28, 0x18, 0xff, 0x24, 0x28, 0x20, 0xff, 0x28,
+	0x28, 0x28, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c,
+	0x20, 0x18, 0xff, 0x20, 0x20, 0x20, 0xff, 0x24, 0x20, 0x28, 0xff, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0xff, 0x1c,
+	0x18, 0x20, 0xff, 0x20, 0x18, 0x28, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00,
+};
+
+// 4x4, level 1: small enough that zlib picks the FIXED Huffman table.
+static const unsigned char kDeflateIconFixed[] = {
+	0x63, 0x60, 0x60, 0x62, 0x80, 0x01, 0x16, 0x06, 0x16, 0x06, 0x05, 0x18,
+	0x07, 0x83, 0x16, 0x10, 0x10, 0xf8, 0x8f, 0x21, 0x88, 0x45, 0x00, 0x00,
+};
+
+// =============================================================================================== //
+// WEAPON ESP Icon mode - the pak (ZIP) reader and the TGA decode
+//
+// Both live in weaponEspCore.cpp, which is what this file links; they used to sit in
+// weaponEsp.cpp's _WIN32 half, where off Windows they could only be compiled, never run - and that
+// is exactly where the bugs that made every stock icon draw as a chip hid. So the tests below
+// drive the code the DLL runs: real ZIP layouts, real zlib streams, and the shape Q3's own icon
+// art has.
+// =============================================================================================== //
+
+// The block type of a stream's first deflate block: 0 stored, 1 fixed Huffman, 2 dynamic Huffman.
+static int DeflateBlockType(const unsigned char* stream)
+{
+	return (stream[0] >> 1) & 3;
+}
+
+// One pixel of a w x h icon: opaque inside the circle, fully transparent outside - the shape a Q3
+// weapon icon has (which is also what makes its alpha channel worth carrying) - with the colour a
+// function of the pixel, so a decode that lost a row, flipped the image or swapped a channel
+// cannot happen to match.
+static void IconPixel(int x, int y, int w, int h, unsigned char& r, unsigned char& g,
+                      unsigned char& b, unsigned char& a)
+{
+	const int dx = x - w / 2;
+	const int dy = y - h / 2;
+	int rad = w / 2 - 2;
+	if (rad < 1)
+		rad = 1;
+	if (dx * dx + dy * dy < rad * rad)
+	{
+		r = (unsigned char)((x * 8) & 0xFF);
+		g = (unsigned char)((y * 8) & 0xFF);
+		b = (unsigned char)(((x + y) * 4) & 0xFF);
+		a = 255;
+	}
+	else
+	{
+		r = g = b = 0;
+		a = 0;
+	}
+}
+
+// The artwork as a plain top-down RGBA image - what every decode below has to come out as.
+static void MakeIconArtwork(unsigned char* rgba, int w, int h)
+{
+	for (int y = 0; y < h; ++y)
+	{
+		for (int x = 0; x < w; ++x)
+		{
+			unsigned char r, g, b, a;
+			IconPixel(x, y, w, h, r, g, b, a);
+			unsigned char* o = rgba + ((size_t)y * w + x) * 4;
+			o[0] = r;
+			o[1] = g;
+			o[2] = b;
+			o[3] = a;
+		}
+	}
+}
+
+// The file row that carries image row `y`: bit 5 of the descriptor says the rows come top-down,
+// so without it - what Q3 writes - the image's first row is the file's LAST one.
+static int FileRow(int y, int h, bool topDown)
+{
+	return topDown ? y : h - 1 - y;
+}
+
+static void TgaHeader(unsigned char* out, int w, int h, int imageType, int bpp, int desc)
+{
+	memset(out, 0, 18);
+	out[2]  = (unsigned char)imageType;
+	out[12] = (unsigned char)(w & 0xFF);
+	out[13] = (unsigned char)(w >> 8);
+	out[14] = (unsigned char)(h & 0xFF);
+	out[15] = (unsigned char)(h >> 8);
+	out[16] = (unsigned char)bpp;       // pixel depth: header byte 16, not 14
+	out[17] = (unsigned char)desc;      // descriptor: byte 17 (0x20 = top-down)
+}
+
+// type 2, 32bpp, Q3's byte order (B,G,R,A). `topDown` only changes where the rows sit.
+static size_t MakeIconTga32(unsigned char* out, int w, int h, bool topDown)
+{
+	TgaHeader(out, w, h, 2, 32, topDown ? 0x20 : 0);
+	unsigned char* px = out + 18;
+	for (int y = 0; y < h; ++y)
+	{
+		unsigned char* row = px + (size_t)FileRow(y, h, topDown) * w * 4;
+		for (int x = 0; x < w; ++x)
+		{
+			unsigned char r, g, b, a;
+			IconPixel(x, y, w, h, r, g, b, a);
+			row[x * 4 + 0] = b;
+			row[x * 4 + 1] = g;
+			row[x * 4 + 2] = r;
+			row[x * 4 + 3] = a;
+		}
+	}
+	return 18 + (size_t)w * h * 4;
+}
+
+// type 2, 24bpp, bottom-up: B,G,R with no alpha channel at all (so every pixel is opaque).
+static size_t MakeIconTga24(unsigned char* out, int w, int h)
+{
+	TgaHeader(out, w, h, 2, 24, 0);
+	unsigned char* px = out + 18;
+	for (int y = 0; y < h; ++y)
+	{
+		unsigned char* row = px + (size_t)FileRow(y, h, false) * w * 3;
+		for (int x = 0; x < w; ++x)
+		{
+			unsigned char r, g, b, a;
+			IconPixel(x, y, w, h, r, g, b, a);
+			row[x * 3 + 0] = b;
+			row[x * 3 + 1] = g;
+			row[x * 3 + 2] = r;
+		}
+	}
+	return 18 + (size_t)w * h * 3;
+}
+
+// The gray level a pixel gets in the 8bpp fixture: the artwork's channels averaged, so the test
+// can recompute the expected byte exactly.
+static unsigned char GrayLevel(int x, int y, int w, int h)
+{
+	unsigned char r, g, b, a;
+	IconPixel(x, y, w, h, r, g, b, a);
+	return (unsigned char)(((unsigned int)r + g + b) / 3);
+}
+
+// type 3, 8bpp gray, bottom-up: one byte per pixel.
+static size_t MakeIconTgaGray(unsigned char* out, int w, int h)
+{
+	TgaHeader(out, w, h, 3, 8, 0);
+	unsigned char* px = out + 18;
+	for (int y = 0; y < h; ++y)
+	{
+		unsigned char* row = px + (size_t)FileRow(y, h, false) * w;
+		for (int x = 0; x < w; ++x)
+			row[x] = GrayLevel(x, y, w, h);
+	}
+	return 18 + (size_t)w * h;
+}
+
+// type 10, run-length encoded 32bpp, bottom-up. A row of identical pixels becomes a run packet
+// (rows above and below the circle are entirely transparent, so those are real runs), anything
+// else a raw packet - both packet kinds, as a pak's icon art exercises them.
+static size_t MakeIconTgaRle(unsigned char* out, int w, int h)
+{
+	TgaHeader(out, w, h, 10, 32, 0);
+	unsigned char* px = out + 18;
+	unsigned char row[64 * 4];
+	size_t n = 0;
+	if (w > 64)
+		return 0;
+	for (int f = 0; f < h; ++f)                       // the file's row order (bottom-up)
+	{
+		const int y = h - 1 - f;                      // the image row it carries
+		for (int x = 0; x < w; ++x)
+		{
+			unsigned char r, g, b, a;
+			IconPixel(x, y, w, h, r, g, b, a);
+			row[x * 4 + 0] = b;
+			row[x * 4 + 1] = g;
+			row[x * 4 + 2] = r;
+			row[x * 4 + 3] = a;
+		}
+
+		bool same = true;
+		for (int x = 1; x < w; ++x)
+			if (memcmp(row, row + x * 4, 4) != 0)
+				same = false;
+
+		if (same)
+		{
+			px[n++] = (unsigned char)(0x80 | (w - 1));
+			memcpy(px + n, row, 4);
+			n += 4;
+		}
+		else
+		{
+			px[n++] = (unsigned char)(w - 1);
+			memcpy(px + n, row, (size_t)w * 4);
+			n += (size_t)w * 4;
+		}
+	}
+	return 18 + n;
+}
+
+static void TestWeaponIconTgaDecode()
+{
+	Section("WEAPON ESP icons - DecodeTga (header bytes, types 2/3/10, byte order, row order)");
+
+	static unsigned char tga[18 + 128 * 128 * 4];     // fits every fixture below
+	static unsigned char artwork[128 * 128 * 4];
+	static unsigned char want[18 + 128 * 128 * 4];
+	unsigned char* rgba = 0;
+	int w = 0, h = 0;
+
+	// --- 32bpp, bottom-up: the stock icon case ---------------------------------------------- //
+	const int side = 32;
+	MakeIconArtwork(artwork, side, side);
+	size_t len = MakeIconTga32(tga, side, side, false);
+	CHECK_UINT(tga[16], 32, "the pixel depth sits in header byte 16 ...");
+	CHECK_UINT(tga[14], 32, "... while byte 14 is the height's low byte - which is where the "
+	                       "decode used to read the depth from (so a 64x64 icon looked like a "
+	                       "64bpp one and was rejected, and every stock icon drew as a chip)");
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a 32x32 icon decodes");
+	CHECK_INT(w, side, "width");
+	CHECK_INT(h, side, "height");
+	if (rgba)
+	{
+		CHECK_TRUE(memcmp(rgba, artwork, (size_t)side * side * 4) == 0,
+		           "... to the artwork, top row first and B,G,R,A read back as RGB(A)");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- the size the old header read mangled: a 64x64 icon (height's low byte 0x40) -------- //
+	const int big = 64;
+	MakeIconArtwork(artwork, big, big);
+	len = MakeIconTga32(tga, big, big, false);
+	CHECK_UINT(tga[14], 0x40, "a 64x64 icon's header byte 14 reads 0x40 - not a pixel depth");
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a 64x64 icon decodes");
+	CHECK_INT(w, big, "64x64 width");
+	if (rgba)
+	{
+		CHECK_TRUE(memcmp(rgba, artwork, (size_t)big * big * 4) == 0, "... to its artwork");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- 128x128: the height's low byte (0x80) is not even a plausible depth ---------------- //
+	const int huge = 128;
+	MakeIconArtwork(artwork, huge, huge);
+	len = MakeIconTga32(tga, huge, huge, false);
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a 128x128 icon decodes");
+	CHECK_INT(w, huge, "128x128 width");
+	if (rgba)
+	{
+		CHECK_TRUE(memcmp(rgba, artwork, (size_t)huge * huge * 4) == 0, "... to its artwork");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- top-down (descriptor bit 5): the same artwork, the other row order ----------------- //
+	MakeIconArtwork(artwork, side, side);
+	len = MakeIconTga32(tga, side, side, true);
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a top-down icon decodes");
+	if (rgba)
+	{
+		CHECK_TRUE(memcmp(rgba, artwork, (size_t)side * side * 4) == 0,
+		           "... to the same artwork (the flip is applied exactly once)");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- 24bpp: no alpha channel in the file, so every pixel is opaque ---------------------- //
+	MakeIconArtwork(artwork, side, side);
+	len = MakeIconTga24(tga, side, side);
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a 24bpp icon decodes");
+	if (rgba)
+	{
+		bool ok = true;
+		for (int i = 0; i < side * side; ++i)
+		{
+			if (rgba[i * 4 + 0] != artwork[i * 4 + 0] || rgba[i * 4 + 1] != artwork[i * 4 + 1] ||
+			    rgba[i * 4 + 2] != artwork[i * 4 + 2] || rgba[i * 4 + 3] != 255)
+				ok = false;
+		}
+		CHECK_TRUE(ok, "... as the artwork with alpha forced opaque");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- 8bpp gray (type 3) ----------------------------------------------------------------- //
+	len = MakeIconTgaGray(tga, side, side);
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "an 8bpp gray icon decodes");
+	if (rgba)
+	{
+		bool ok = true;
+		for (int y = 0; y < side && ok; ++y)
+		{
+			for (int x = 0; x < side; ++x)
+			{
+				const unsigned char v = GrayLevel(x, y, side, side);
+				const unsigned char* o = rgba + ((size_t)y * side + x) * 4;
+				if (o[0] != v || o[1] != v || o[2] != v || o[3] != 255)
+					ok = false;
+			}
+		}
+		CHECK_TRUE(ok, "... as the gray level in all three channels, opaque");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// --- 16bpp: 5-5-5, expanded and forced opaque (within a 5-bit step of the artwork) ------ //
+	{
+		TgaHeader(tga, 4, 4, 2, 16, 0);
+		for (int y = 0; y < 4; ++y)
+		{
+			for (int x = 0; x < 4; ++x)
+			{
+				unsigned char r, g, b, a;
+				IconPixel(x, y, 4, 4, r, g, b, a);
+				const unsigned int v555 = (unsigned int)(r >> 3) << 10 |
+				                          (unsigned int)(g >> 3) << 5 |
+				                          (unsigned int)(b >> 3);
+				tga[18 + (y * 4 + x) * 2 + 0] = (unsigned char)(v555 & 0xFF);
+				tga[18 + (y * 4 + x) * 2 + 1] = (unsigned char)(v555 >> 8);
+			}
+		}
+		CHECK_TRUE(WeaponEsp::DecodeTga(tga, 18 + 4 * 4 * 2, &rgba, &w, &h), "a 16bpp icon decodes");
+		CHECK_INT(w, 4, "16bpp width");
+		if (rgba)
+		{
+			unsigned char r, g, b, a;
+			IconPixel(0, 0, 4, 4, r, g, b, a);
+			CHECK_UINT(rgba[3], 255, "16bpp: opaque");
+			CHECK_TRUE(rgba[0] >= r - 8 && rgba[0] <= r + 8, "16bpp: red within a 5-bit step");
+			free(rgba);
+			rgba = 0;
+		}
+	}
+
+	// --- type 10 (RLE): must come out as the uncompressed read of the same artwork ---------- //
+	MakeIconArtwork(artwork, side, side);
+	const size_t plainLen = MakeIconTga32(tga, side, side, false);
+	memcpy(want, tga, plainLen);                      // keep the uncompressed file for comparison
+	const size_t rleLen = MakeIconTgaRle(tga, side, side);
+	CHECK_TRUE(rleLen < plainLen, "the RLE fixture is smaller than the uncompressed one");
+	CHECK_TRUE(WeaponEsp::DecodeTga(tga, rleLen, &rgba, &w, &h), "an RLE icon decodes");
+	if (rgba)
+	{
+		CHECK_TRUE(memcmp(rgba, artwork, (size_t)side * side * 4) == 0,
+		           "... to the uncompressed artwork");
+		free(rgba);
+		rgba = 0;
+	}
+
+	// an RLE packet that runs past the last pixel: the engine lets it stop there, and so must the
+	// decode (a 4x4 all-opaque image, whose last packet claims 128 pixels)
+	{
+		static unsigned char one[18 + 4 * 4 * 4 + 8];
+		memset(one, 0, sizeof(one));
+		TgaHeader(one, 4, 4, 10, 32, 0);
+		size_t n = 18;
+		one[n++] = 0x8F;                              // a run of 16 pixels ...
+		one[n++] = 0x00; one[n++] = 0x00; one[n++] = 0x00; one[n++] = 0xFF;   // ... of opaque black
+		one[n++] = 0xFF;                              // then a run of 128 with nothing left
+		one[n++] = 0x01; one[n++] = 0x02; one[n++] = 0x03; one[n++] = 0xFF;
+		CHECK_TRUE(WeaponEsp::DecodeTga(one, n, &rgba, &w, &h),
+		           "an RLE packet that overshoots the last pixel still decodes");
+		if (rgba)
+		{
+			CHECK_UINT(rgba[3], 255, "... to the pixels the earlier packets described");
+			free(rgba);
+			rgba = 0;
+		}
+	}
+
+	// --- the refusals ----------------------------------------------------------------------- //
+	CHECK_TRUE(!WeaponEsp::DecodeTga(0, 100, &rgba, &w, &h), "no data: refused");
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, 17, &rgba, &w, &h), "a 17-byte header: refused");
+	CHECK_TRUE(rgba == 0 && w == 0 && h == 0, "... with nothing handed back");
+
+	len = MakeIconTga32(tga, side, side, false);
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len - 10, &rgba, &w, &h), "pixels cut short: refused");
+	CHECK_TRUE(rgba == 0, "... with nothing handed back");
+
+	tga[0] = 8;                                       // an id field the bytes do not hold
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "an id field past the end: refused");
+	tga[0] = 0;
+
+	TgaHeader(tga, side, side, 5, 32, 0);             // 5 is not an image type TGA defines
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "an unknown image type: refused");
+	TgaHeader(tga, side, side, 2, 12, 0);             // nor is 12 a pixel depth
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "an unknown pixel depth: refused");
+	TgaHeader(tga, side, side, 2, 32, 0);
+	tga[1] = 1;                                       // a colour-mapped image
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a colour-mapped image: refused");
+	TgaHeader(tga, 0, side, 2, 32, 0);
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a zero-sized image: refused");
+	TgaHeader(tga, 513, side, 2, 32, 0);
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, len, &rgba, &w, &h), "a 513-pixel image: refused");
+	TgaHeader(tga, side, side, 10, 32, 0);            // an RLE header with no packets behind it
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, 18, &rgba, &w, &h),
+	           "an RLE stream with no packets behind it: refused");
+
+	MakeIconTgaRle(tga, side, side);
+	const size_t shortRle = 18 + 1 + 4 + 1;           // the first packet plus a cut-off one
+	CHECK_TRUE(!WeaponEsp::DecodeTga(tga, shortRle, &rgba, &w, &h), "a cut-off RLE stream: refused");
+}
+
+// =============================================================================================== //
+// the pak side: a ZIP laid out the way a pak tool lays one out
+// =============================================================================================== //
+
+static void Put16(unsigned char* p, unsigned int v)
+{
+	p[0] = (unsigned char)(v & 0xFF);
+	p[1] = (unsigned char)((v >> 8) & 0xFF);
+}
+
+static void Put32(unsigned char* p, unsigned int v)
+{
+	p[0] = (unsigned char)(v & 0xFF);
+	p[1] = (unsigned char)((v >> 8) & 0xFF);
+	p[2] = (unsigned char)((v >> 16) & 0xFF);
+	p[3] = (unsigned char)((v >> 24) & 0xFF);
+}
+
+struct PakEntry
+{
+	const char*          name;       // the name as stored in the archive
+	unsigned int         method;     // 0 stored, 8 deflated, anything else: not read
+	const unsigned char* packed;     // the bytes as they sit in the archive
+	unsigned int         packedLen;  // ... their length
+	unsigned int         rawLen;     // the uncompressed size the entry declares
+	unsigned int         localExtra; // junk in the LOCAL header's extra field only - the data
+	                                 // offset has to come from the local header, not the index
+};
+
+// Local header + data per entry, then the central directory, then the end-of-central-directory
+// record with `commentLen` junk bytes behind it (which the loader has to scan past). The CRC
+// fields stay zero - the loader does not check them.
+static size_t BuildPak(unsigned char* out, size_t outCap, const PakEntry* entries, int count,
+                       unsigned int commentLen)
+{
+	unsigned int offsets[8];
+	if (count > 8)
+		return 0;
+
+	size_t n = 0;
+	for (int i = 0; i < count; ++i)
+	{
+		const size_t nameLen = strlen(entries[i].name);
+		if (n + 30 + nameLen + entries[i].localExtra + entries[i].packedLen > outCap)
+			return 0;
+		unsigned char* h = out + n;
+		memset(h, 0, 30);
+		h[0] = 'P'; h[1] = 'K'; h[2] = 3; h[3] = 4;
+		Put16(h + 4, 20);                                 // version needed to extract
+		Put16(h + 8, entries[i].method);
+		Put32(h + 18, entries[i].packedLen);              // compressed size
+		Put32(h + 22, entries[i].rawLen);                 // uncompressed size
+		Put16(h + 26, (unsigned int)nameLen);
+		Put16(h + 28, entries[i].localExtra);
+		memcpy(h + 30, entries[i].name, nameLen);
+		memset(h + 30 + nameLen, 0xEE, entries[i].localExtra);
+		memcpy(h + 30 + nameLen + entries[i].localExtra, entries[i].packed, entries[i].packedLen);
+		offsets[i] = (unsigned int)n;
+		n += 30 + nameLen + entries[i].localExtra + entries[i].packedLen;
+	}
+
+	const size_t cdStart = n;
+	for (int i = 0; i < count; ++i)
+	{
+		const size_t nameLen = strlen(entries[i].name);
+		if (n + 46 + nameLen > outCap)
+			return 0;
+		unsigned char* r = out + n;
+		memset(r, 0, 46);
+		r[0] = 'P'; r[1] = 'K'; r[2] = 1; r[3] = 2;
+		Put16(r + 4, 20);                                 // version made by
+		Put16(r + 6, 20);                                 // version needed
+		Put16(r + 10, entries[i].method);
+		Put32(r + 20, entries[i].packedLen);
+		Put32(r + 24, entries[i].rawLen);
+		Put16(r + 28, (unsigned int)nameLen);
+		Put32(r + 42, offsets[i]);                        // where the local header starts
+		memcpy(r + 46, entries[i].name, nameLen);
+		n += 46 + nameLen;
+	}
+
+	if (n + 22 + commentLen > outCap)
+		return 0;
+	unsigned char* e = out + n;
+	memset(e, 0, 22);
+	e[0] = 'P'; e[1] = 'K'; e[2] = 5; e[3] = 6;
+	Put16(e + 8, (unsigned int)count);
+	Put16(e + 10, (unsigned int)count);
+	Put32(e + 12, (unsigned int)(n - cdStart));           // size of the central directory
+	Put32(e + 16, (unsigned int)cdStart);                 // ... and where it starts
+	Put16(e + 20, commentLen);
+	n += 22;
+	if (commentLen)
+	{
+		memset(out + n, 'x', commentLen);
+		n += commentLen;
+	}
+	return n;
+}
+
+// What weaponEsp.cpp hands PakReadEntry on Windows is SetFilePointer + ReadFile over the pak; a
+// test hands it a buffer.
+struct MemoryPak
+{
+	const unsigned char* data;
+	size_t               size;
+};
+
+static bool MemoryPakRead(void* user, unsigned long long offset, void* dest, size_t count)
+{
+	const MemoryPak& pak = *(const MemoryPak*)user;
+	if (offset > (unsigned long long)pak.size ||
+	    (size_t)((unsigned long long)pak.size - offset) < count)
+		return false;
+	memcpy(dest, pak.data + (size_t)offset, count);
+	return true;
+}
+
+static void TestWeaponIconPakRead()
+{
+	Section("WEAPON ESP icons - PakReadEntry (ZIP central directory, DEFLATE, real zlib streams)");
+
+	static unsigned char pak[128 * 1024];
+	static unsigned char icon[18 + 32 * 32 * 4];       // the 32x32 TGA the fixtures were made from
+	static unsigned char artwork[32 * 32 * 4];
+	MakeIconArtwork(artwork, 32, 32);
+	const size_t iconLen = MakeIconTga32(icon, 32, 32, false);
+
+	// the fixtures really do cover the three block types - regenerating them wrong shows up here
+	CHECK_INT(DeflateBlockType(kDeflateIconDynamic), 2, "the dynamic fixture is a dynamic block");
+	CHECK_INT(DeflateBlockType(kDeflateIconStored), 0, "the stored fixture is a stored block");
+	CHECK_INT(DeflateBlockType(kDeflateIconFixed), 1, "the fixed fixture is a fixed-Huffman block");
+
+	PakEntry entry;
+	memset(&entry, 0, sizeof(entry));
+
+	// --- a stored entry: the plain copy path ------------------------------------------------- //
+	entry.name      = "icons/Iconw_Test.tga";          // the archive's casing, like the engine's
+	entry.method    = 0;
+	entry.packed    = icon;
+	entry.packedLen = (unsigned int)iconLen;
+	entry.rawLen    = (unsigned int)iconLen;
+	size_t pakLen = BuildPak(pak, sizeof(pak), &entry, 1, 0);
+	CHECK_TRUE(pakLen > 0, "a pak with one stored icon was built");
+
+	MemoryPak file;
+	file.data = pak;
+	file.size = pakLen;
+
+	unsigned char* bytes = 0;
+	size_t outLen = 0;
+	CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_test.tga",
+	                                   &bytes, &outLen),
+	           "a stored entry is found by a differently-cased name (the engine's search)");
+	CHECK_UINT(outLen, iconLen, "... with the size the file has");
+	if (bytes)
+	{
+		CHECK_TRUE(memcmp(bytes, icon, iconLen) == 0, "... byte for byte");
+		unsigned char* rgba = 0;
+		int w = 0, h = 0;
+		CHECK_TRUE(WeaponEsp::DecodeTga(bytes, outLen, &rgba, &w, &h), "... and decodes as the icon");
+		if (rgba)
+		{
+			CHECK_TRUE(memcmp(rgba, artwork, sizeof(artwork)) == 0, "... to its artwork");
+			free(rgba);
+		}
+		free(bytes);
+	}
+
+	// --- a deflated entry per block type ----------------------------------------------------- //
+	{
+		struct
+		{
+			const char*          name;
+			const unsigned char* stream;
+			unsigned int         streamLen;
+			size_t               rawLen;
+			const char*          what;
+		} cases[] =
+		{
+			{ "icons/iconw_machinegun.tga", kDeflateIconDynamic, (unsigned int)sizeof(kDeflateIconDynamic), iconLen, "dynamic Huffman" },
+			{ "icons/iconw_shotgun.tga",    kDeflateIconStored,  (unsigned int)sizeof(kDeflateIconStored),  18 + 8 * 8 * 4, "stored blocks" },
+			{ "icons/iconw_grenade.tga",    kDeflateIconFixed,   (unsigned int)sizeof(kDeflateIconFixed),   18 + 4 * 4 * 4, "fixed Huffman" },
+		};
+
+		for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+		{
+			PakEntry deflated;
+			memset(&deflated, 0, sizeof(deflated));
+			deflated.name      = cases[i].name;
+			deflated.method    = 8;
+			deflated.packed    = cases[i].stream;
+			deflated.packedLen = cases[i].streamLen;
+			deflated.rawLen    = (unsigned int)cases[i].rawLen;
+			pakLen = BuildPak(pak, sizeof(pak), &deflated, 1, 0);
+			file.size = pakLen;
+			bytes = 0;
+			outLen = 0;
+
+			char what[128];
+			snprintf(what, sizeof(what), "a deflated entry (%s) is inflated", cases[i].what);
+			CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, cases[i].name, &bytes,
+			                                   &outLen), what);
+			CHECK_UINT(outLen, cases[i].rawLen, "... to the declared size");
+			if (bytes)
+			{
+				if (i == 0)
+					CHECK_TRUE(memcmp(bytes, icon, iconLen) == 0,
+					           "... byte for byte - the 32x32 icon the fixture was made from");
+				unsigned char* rgba = 0;
+				int w = 0, h = 0;
+				snprintf(what, sizeof(what), "... and decodes as a TGA (%s)", cases[i].what);
+				CHECK_TRUE(WeaponEsp::DecodeTga(bytes, outLen, &rgba, &w, &h), what);
+				free(rgba);
+				free(bytes);
+			}
+		}
+	}
+
+	// --- a local header carrying an extra field the central directory does not know about ----- //
+	entry.name       = "icons/iconw_railgun.tga";
+	entry.localExtra = 12;
+	pakLen = BuildPak(pak, sizeof(pak), &entry, 1, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_railgun.tga",
+	                                   &bytes, &outLen),
+	           "an entry with a local-only extra field is found");
+	CHECK_UINT(outLen, iconLen, "... with the size the file has");
+	if (bytes)
+	{
+		CHECK_TRUE(memcmp(bytes, icon, iconLen) == 0,
+		           "... and its data starts after the LOCAL header's name/extra lengths");
+		free(bytes);
+	}
+	entry.localExtra = 0;
+
+	// --- an exact-case match wins over an earlier case-insensitive one ----------------------- //
+	{
+		static unsigned char small[18 + 4 * 4 * 4];
+		const size_t smallLen = MakeIconTga32(small, 4, 4, false);
+		PakEntry twins[2];
+		memset(twins, 0, sizeof(twins));
+		twins[0].name      = "icons/iconw_rocket.tga";     // the 4x4 icon, first in the archive
+		twins[0].method    = 0;
+		twins[0].packed    = small;
+		twins[0].packedLen = (unsigned int)smallLen;
+		twins[0].rawLen    = (unsigned int)smallLen;
+		twins[1].name      = "icons/iconw_rocket.TGA";     // the 32x32 one, exact-cased
+		twins[1].method    = 0;
+		twins[1].packed    = icon;
+		twins[1].packedLen = (unsigned int)iconLen;
+		twins[1].rawLen    = (unsigned int)iconLen;
+		pakLen = BuildPak(pak, sizeof(pak), twins, 2, 0);
+		file.size = pakLen;
+		bytes = 0;
+		outLen = 0;
+		CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_rocket.TGA",
+		                                   &bytes, &outLen),
+		           "the exact-cased entry is found");
+		CHECK_UINT(outLen, iconLen, "... and it is the exact match that won, not the earlier entry");
+		if (bytes)
+			free(bytes);
+
+		bytes = 0;
+		outLen = 0;
+		CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "ICONS/ICONW_ROCKET.tga",
+		                                   &bytes, &outLen),
+		           "with no exact match, the first case-insensitive one is used");
+		CHECK_UINT(outLen, smallLen, "... which is the entry that comes first in the archive");
+		if (bytes)
+			free(bytes);
+	}
+
+	// --- an archive comment behind the end-of-central-directory record ----------------------- //
+	entry.name      = "icons/iconw_railgun.tga";
+	entry.method    = 0;
+	entry.packed    = icon;
+	entry.packedLen = (unsigned int)iconLen;
+	entry.rawLen    = (unsigned int)iconLen;
+	pakLen = BuildPak(pak, sizeof(pak), &entry, 1, 300);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_railgun.tga",
+	                                   &bytes, &outLen),
+	           "the record is found with 300 bytes of comment behind it");
+	if (bytes)
+		free(bytes);
+
+	// --- the refusals ------------------------------------------------------------------------ //
+	pakLen = BuildPak(pak, sizeof(pak), &entry, 1, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_bfg.tga", &bytes,
+	                                    &outLen),
+	           "a name the pak does not hold: refused");
+	CHECK_TRUE(bytes == 0 && outLen == 0, "... with nothing handed back");
+
+	MemoryPak cut;
+	cut.data = pak;
+	cut.size = pakLen / 2;                             // the tail cannot even be read
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &cut, cut.size, "icons/iconw_railgun.tga",
+	                                    &bytes, &outLen),
+	           "a pak whose reads run off the end: refused");
+
+	static unsigned char junk[512];
+	memset(junk, 0xAA, sizeof(junk));
+	cut.data = junk;
+	cut.size = sizeof(junk);
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &cut, cut.size, "icons/iconw_test.tga",
+	                                    &bytes, &outLen),
+	           "a file that is not a ZIP at all: refused");
+
+	// a method a pak could hold but this loader does not read (bzip2)
+	PakEntry other;
+	memset(&other, 0, sizeof(other));
+	other.name      = "icons/iconw_plasma.tga";
+	other.method    = 12;
+	other.packed    = icon;
+	other.packedLen = (unsigned int)iconLen;
+	other.rawLen    = (unsigned int)iconLen;
+	pakLen = BuildPak(pak, sizeof(pak), &other, 1, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_plasma.tga",
+	                                    &bytes, &outLen),
+	           "a bzip2 entry (method 12): refused");
+
+	// a deflated entry whose stream is cut short (a half-written file)
+	static unsigned char damaged[sizeof(kDeflateIconDynamic) - 6];
+	memcpy(damaged, kDeflateIconDynamic, sizeof(damaged));
+	damaged[sizeof(damaged) / 2] ^= 0xFF;
+	other.name      = "icons/iconw_lightning.tga";
+	other.method    = 8;
+	other.packed    = damaged;
+	other.packedLen = (unsigned int)sizeof(damaged);
+	other.rawLen    = (unsigned int)iconLen;
+	pakLen = BuildPak(pak, sizeof(pak), &other, 1, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_lightning.tga",
+	                                    &bytes, &outLen),
+	           "a deflate stream cut short: refused");
+	CHECK_TRUE(bytes == 0, "... with nothing handed back");
+
+	// a deflated entry whose declared size is smaller than its stream inflates to: the inflater
+	// has to fail rather than write past what the caller sized the buffer for
+	other.name      = "icons/iconw_chaingun.tga";
+	other.method    = 8;
+	other.packed    = kDeflateIconDynamic;
+	other.packedLen = (unsigned int)sizeof(kDeflateIconDynamic);
+	other.rawLen    = 100;
+	pakLen = BuildPak(pak, sizeof(pak), &other, 1, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_chaingun.tga",
+	                                    &bytes, &outLen),
+	           "a declared size the stream overruns: refused");
+
+	// a pak with no entries at all
+	pakLen = BuildPak(pak, sizeof(pak), &entry, 0, 0);
+	file.size = pakLen;
+	bytes = 0;
+	outLen = 0;
+	CHECK_TRUE(!WeaponEsp::PakReadEntry(MemoryPakRead, &file, pakLen, "icons/iconw_test.tga", &bytes,
+	                                    &outLen),
+	           "an empty pak: refused");
+}
+
 int main(void)
 {
 	printf("kutaQ3 hook tests - NAME ESP core (nameEspCore.cpp)\n");
@@ -1780,6 +2728,8 @@ int main(void)
 	TestWeaponScannerNegatives();
 	TestWeaponLegAnchor();
 	TestWeaponFadeMatchesOtherEsp();
+	TestWeaponIconTgaDecode();
+	TestWeaponIconPakRead();
 
 	printf("\n%d checks, %d failed - %s\n", g_checks, g_failed, g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;

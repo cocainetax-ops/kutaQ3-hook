@@ -1379,8 +1379,18 @@ void RenderKutaQ3Menu()
 					ImGui::TextDisabled("%d ahead, %d at edge, %d behind, %d faded out",
 					                    st.inView, st.edge, st.behind, st.faded);
 					if (cfg.weaponEspStyle == 1 && st.iconsMissing)
-						ImGui::TextDisabled("%d icon%s not in the paks (chip drawn)",
-					                    st.iconsMissing, st.iconsMissing == 1 ? "" : "s");
+					{
+						// A chip means one of three things, and they point at very different
+						// causes: the .tga is not in any pak, it is there but not a TGA this
+						// loader reads, or GL refused the texture. LastIconNote() names the
+						// shader and the file the search ended up looking at.
+						ImGui::TextDisabled("%d icon%s missing (chip drawn): %d not in the paks, "
+						                    "%d unreadable, %d no GL texture",
+						                    st.iconsMissing, st.iconsMissing == 1 ? "" : "s",
+						                    st.iconsNotInPak, st.iconsBadData, st.iconsNoUpload);
+						if (WeaponEsp::LastIconNote()[0])
+							ImGui::TextWrapped("%s", WeaponEsp::LastIconNote());
+					}
 				}
 				else if (wsp.valid)
 					ImGui::TextDisabled("no other players in snapshot");
