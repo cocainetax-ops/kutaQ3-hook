@@ -42,6 +42,12 @@
     <ClCompile Include="healthEsp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="weaponEspCore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="weaponEsp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="glText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -99,6 +105,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="healthEsp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="weaponEsp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="detver.h">

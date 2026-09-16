@@ -171,6 +171,8 @@
     <ClCompile Include="nameEsp.cpp" />
     <ClCompile Include="distanceEsp.cpp" />
     <ClCompile Include="healthEsp.cpp" />
+    <ClCompile Include="weaponEspCore.cpp" />
+    <ClCompile Include="weaponEsp.cpp" />
     <ClCompile Include="glText.cpp" />
     <ClCompile Include="glDraw.cpp" />
     <ClCompile Include="glStateGuard.cpp" />
@@ -192,6 +194,7 @@
     <ClInclude Include="nameEsp.h" />
     <ClInclude Include="distanceEsp.h" />
     <ClInclude Include="healthEsp.h" />
+    <ClInclude Include="weaponEsp.h" />
     <ClInclude Include="detver.h" />
     <ClInclude Include="detours.h" />
     <ClInclude Include="glText.h" />

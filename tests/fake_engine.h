@@ -44,6 +44,8 @@ namespace FakeEngine
 	void SetDeadPlayer(int clientNum, const char* infoString, const float origin[3]);
 	// Stamp EV_* onto the already-added player entity (eventParm is remaining HP for EV_PAIN).
 	void SetPlayerEvent(int clientNum, int event, int eventParm);
+	// Stamp the player's current weapon onto the already-added entity (entityState_t::weapon).
+	void SetPlayerWeapon(int clientNum, int weapon);
 
 	// Roll a new server frame: the current snapshot becomes the previous one (the pair the
 	// cgame interpolates between), the message number advances and the entity list is cleared

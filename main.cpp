@@ -38,6 +38,7 @@
 #include "nameEsp.h"
 #include "distanceEsp.h"
 #include "healthEsp.h"
+#include "weaponEsp.h"
 // =============================================================================================== //
 
 // =============================================================================================== //
@@ -1339,6 +1340,73 @@ void RenderKutaQ3Menu()
 					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
 			}
 
+			ImGui::Spacing();
+
+			// WEAPON ESP (weaponEsp.h): the player's current weapon at their LEG position. The
+			// weapon number is the stock networked field; the name and icon are resolved through
+			// the cgame's own native item table (the one cg_weapons[] is built from), so a total
+			// conversion's own weapon list is what the ESP shows.
+			ImGui::Checkbox("Weapon ESP (OpenGL)", &cfg.weaponEsp);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("The other players' current weapon at their LEG position (not\n"
+				                  "the head), through walls - the only ESP anchored below the\n"
+				                  "model, so it never collides with the Name / Distance / Health\n"
+				                  "stack above the head.\n"
+				                  "Weapon number: the stock networked field, the same index the\n"
+				                  "cgame uses for its own cg_weapons[].\n"
+				                  "Name / icon: read from the cgame's native item table (the one\n"
+				                  "cg_weapons[] is built from), so a total conversion's own weapon\n"
+				                  "list is displayed as-is; built-in stock names when no native\n"
+				                  "table is found.\n"
+				                  "Scales down and fades out with distance, like the other ESPs.");
+			if (cfg.weaponEsp)
+			{
+				const WeaponEsp::DrawStats& st = WeaponEsp::LastDrawStats();
+				ImGui::RadioButton("Text", &cfg.weaponEspStyle, 0);
+				ImGui::SameLine();
+				ImGui::RadioButton("Icon", &cfg.weaponEspStyle, 1);
+				ImGui::SameLine();
+				ImGui::RadioButton("Model", &cfg.weaponEspStyle, 2);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Text: the weapon's name string, in the GL::Font face.\n"
+					                  "Icon: the cgame's own item icon for the weapon, loaded\n"
+					                  "from the game's paks and drawn at the leg position.\n"
+					                  "Model: the weapon's actual 3D model (the same file the\n"
+					                  "cgame renders from its item table) pushed into the\n"
+					                  "world scene at the leg position, through walls.\n"
+					                  "A weapon without a model falls back to the icon.");
+				if (cfg.weaponEspStyle == 2)
+				{
+					ImGui::Indent(12.0f);
+					ImGui::SliderFloat("model scale", &cfg.weaponEspModelScale, 0.25f, 4.0f, "%.2f");
+					ImGui::SameLine();
+					ImGui::TextDisabled("(1.00 = the model's own size)");
+					ImGui::Unindent(12.0f);
+					ImGui::TextDisabled("%s", WeaponEsp::ModelStatus());
+					if (st.modelsMissing)
+						ImGui::TextDisabled("%d tag%s have no 3D model (icon shown instead)",
+					                    st.modelsMissing, st.modelsMissing == 1 ? "" : "s");
+				}
+
+				const NameEsp::Frame& wsp = NameEsp::Current();
+				if (wsp.valid && wsp.playerCount > 0)
+				{
+					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d weapon tag%s on screen",
+					                   st.drawn, st.drawn == 1 ? "" : "s");
+					ImGui::TextDisabled("%d ahead, %d at edge, %d behind, %d faded out",
+					                    st.inView, st.edge, st.behind, st.faded);
+					if (cfg.weaponEspStyle == 1 && st.iconsMissing)
+						ImGui::TextDisabled("%d icon%s not in the paks (chip drawn)",
+					                    st.iconsMissing, st.iconsMissing == 1 ? "" : "s");
+				}
+				else if (wsp.valid)
+					ImGui::TextDisabled("no other players in snapshot");
+				else
+					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
+				ImGui::TextDisabled("weapon table: %s (%d weapons)",
+				                    WeaponEsp::TableSource(), WeaponEsp::TableWeaponCount());
+			}
+
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("EXTRAS"))
@@ -1518,16 +1586,21 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	// Gather() - one int store, and it keeps the estimate honest without a second code path.
 	NameEsp::SetSpawnHealthAssumption(Config::g_Settings.healthEspSpawnHealth);
 
-	if (Config::g_Settings.nameEsp || Config::g_Settings.distanceEsp || Config::g_Settings.healthEsp)
+	if (Config::g_Settings.nameEsp || Config::g_Settings.distanceEsp || Config::g_Settings.healthEsp ||
+	    Config::g_Settings.weaponEsp)
 		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
 	else if (NameEsp::Current().valid)
 		NameEsp::Reset();
 
 	// Draw order follows the on-screen row stack (NameEsp::ComputeEspRows): the name, then the
-	// distance, then the health bar on the last row. Each feature checks its own toggle.
+	// distance, then the health bar on the last row. The weapon ESP is drawn last: it is the
+	// only overlay anchored BELOW the player (leg position), so it can never collide with the
+	// head-anchored stack, and drawing it last keeps it on top at the rare shared edge clamp.
+	// Each feature checks its own toggle.
 	NameEsp::Draw();
 	DistanceEsp::Draw();
 	HealthEsp::Draw();
+	WeaponEsp::Draw();
 
 	// Build + render the frame inside the legacy state guard.
 	//

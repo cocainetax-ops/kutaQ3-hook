@@ -41,6 +41,7 @@ typedef double         GLclampd;
 #define GL_PROJECTION          0x1701
 #define GL_SRC_ALPHA           0x0302
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define GL_RGBA                0x1908
 
 // ---- recording entry points --------------------------------------------------------------------
 inline void glGetIntegerv(GLenum pname, GLint* params)
@@ -150,3 +151,30 @@ inline GLuint glGenLists(GLsizei range)
 	Rec::Push1("glGenLists", (double)range);
 	return base;
 }
+
+// ---- the texture surface the WEAPON ESP icon path touches (weaponEsp.cpp) -------------------
+// glGenTextures hands out ids the way a driver would, so a test can tell "bound the loaded
+// icon" from "bound nothing" in the recorded calls.
+inline GLuint glGenTextures(GLsizei n)
+{
+	static GLuint nextTex = 5000;
+	const GLuint tex = nextTex;
+	nextTex += (GLuint)n;
+	Rec::Push1("glGenTextures", (double)n);
+	return tex;
+}
+
+inline void glBindTexture(GLenum target, GLuint texture)
+{
+	Rec::Push2("glBindTexture", (double)target, (double)texture);
+}
+
+inline void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width,
+                         GLsizei height, GLint border, GLenum format, GLenum type,
+                         const GLvoid* data)
+{
+	Rec::Push4("glTexImage2D", (double)internalFormat, (double)width, (double)height,
+	           (double)(data != 0 ? 1 : 0));
+}
+
+inline void glTexCoord2f(GLfloat u, GLfloat v) { Rec::Push2("glTexCoord2f", u, v); }

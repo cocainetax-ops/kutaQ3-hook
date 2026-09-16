@@ -21,6 +21,8 @@
 #   vmhook.o  vmHook.cpp, compiled only. It is the Win32 half of the VM hook (PE headers,
 #           VirtualQuery, Detours) and cannot run off Windows; tests/stub_win/ declares the Win32
 #           surface it touches so it still gets type-checked here.
+#   weaponesp.o  weaponEsp.cpp, compiled only - its _WIN32 half (the cgame data walk, the
+#           pak / ZIP / TGA icon loader) type-checked against the same stub_win/ surface.
 #
 #   make -C tests check
 # =============================================================================================== #
@@ -34,15 +36,16 @@ ROOT     := ..
 SDK      := $(ROOT)/SDK
 BIN      := build
 
-CORE_SRCS := test_nameesp.cpp fake_engine.cpp $(ROOT)/nameEspCore.cpp
+CORE_SRCS := test_nameesp.cpp fake_engine.cpp $(ROOT)/nameEspCore.cpp $(ROOT)/weaponEspCore.cpp
 GL_SRCS   := test_gl.cpp fake_engine.cpp stub_glStateGuard.cpp \
              $(ROOT)/nameEsp.cpp $(ROOT)/distanceEsp.cpp $(ROOT)/nameEspCore.cpp \
-             $(ROOT)/healthEsp.cpp $(ROOT)/glText.cpp $(ROOT)/glDraw.cpp
+             $(ROOT)/healthEsp.cpp $(ROOT)/weaponEsp.cpp $(ROOT)/weaponEspCore.cpp \
+             $(ROOT)/glText.cpp $(ROOT)/glDraw.cpp
 VM_SRCS   := test_vmfind.cpp $(ROOT)/vmFind.cpp
 
 .PHONY: all check clean
 
-all: $(BIN)/mirror $(BIN)/core $(BIN)/gl $(BIN)/vm $(BIN)/vmhook.o
+all: $(BIN)/mirror $(BIN)/core $(BIN)/gl $(BIN)/vm $(BIN)/vmhook.o $(BIN)/weaponesp.o
 
 check: all
 	@echo "=== mirror (q3sdk.h + vmFind.h vs the SDK headers) ==="
@@ -58,6 +61,7 @@ check: all
 	@./$(BIN)/gl | tail -n 4
 	@echo
 	@echo "vmhook.o compiled: vmHook.cpp type-checks against stub_win/ (Win32-only file, not run here)"
+	@echo "weaponesp.o compiled: weaponEsp.cpp's _WIN32 half type-checks against stub_win/ (not run here)"
 
 $(BIN):
 	@mkdir -p $(BIN)
@@ -80,6 +84,12 @@ $(BIN)/vm: $(VM_SRCS) | $(BIN)
 # which holds the <windows.h> the GL tests use.
 $(BIN)/vmhook.o: $(ROOT)/vmHook.cpp $(ROOT)/vmHook.h $(ROOT)/vmFind.h stub_win/windows.h | $(BIN)
 	$(CXX) $(CXXFLAGS) -Wno-unknown-pragmas -Istub_win -Istub -I$(ROOT) -I. -c -o $@ $(ROOT)/vmHook.cpp
+
+# weaponEsp.cpp's _WIN32 half (the cgame data walk, the pak / ZIP / TGA icon loader) gets the same
+# treatment: compiled with _WIN32 defined against stub_win/ so that half's Win32 surface is
+# type-checked here too (the GL build above compiles the other half).
+$(BIN)/weaponesp.o: $(ROOT)/weaponEsp.cpp $(ROOT)/weaponEsp.h $(ROOT)/weaponEspCore.cpp stub_win/windows.h | $(BIN)
+	$(CXX) $(CXXFLAGS) -Wno-unknown-pragmas -D_WIN32 -Istub_win -Istub -I$(ROOT) -I. -c -o $@ $(ROOT)/weaponEsp.cpp
 
 # -Istub has to win over the system include path: it provides <windows.h> and <gl/GL.h>
 $(BIN)/gl: $(GL_SRCS) stub/windows.h stub/gl/GL.h

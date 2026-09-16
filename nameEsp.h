@@ -92,8 +92,18 @@ namespace NameEsp
 		char  name[64];       // Q3 "^1" colour codes already stripped
 		float origin[3];      // head anchor (lerpOrigin + kPlayerTagHeight)
 		float lerpOrigin[3];  // cent->lerpOrigin: the interpolated feet/origin the model sits on
+		float lerpAngles[3];  // cent->lerpAngles: the player's own interpolated pitch/yaw/roll,
+		                      // lerped with the same fraction as lerpOrigin (the cgame's
+		                      // CG_InterpolateEntityPosition lerps both). WEAPON ESP's 3D Model
+		                      // mode orients the weapon model with these, the way the cgame
+		                      // orients the body it floats on.
 		int   clientNum;
 		int   team;           // Team
+		int   weapon;         // entityState_t::weapon: the player's current weapon_t. This is
+		                      // the index the cgame uses to index its own native cg_weapons[] -
+		                      // WEAPON ESP resolves the name / icon through the cgame's item
+		                      // table with it, so whatever a mod numbers its weapons as, the
+		                      // ESP follows (see weaponEsp.h).
 		int   health;         // last known HP (assumed spawn level until EV_PAIN; 1..200). Stock
 		                      // Q3 does not network other players' STAT_HEALTH - EV_PAIN's
 		                      // eventParm is the only snapshot field that carries it, so this is

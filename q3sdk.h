@@ -105,6 +105,12 @@ namespace q3
 	// a visible player's name to the edge; see the chest-anchor test in tests/test_gl.cpp.
 	const float kChestHeight              = 16.0f;
 
+	// Mid-leg of the same standing bbox (the origin sits at the feet, the bbox spans -24..+32).
+	// WEAPON ESP anchors here - BELOW the model, where the other ESPs (all stacked above the
+	// head anchor, kPlayerTagHeight) can never reach: the full player bbox always sits between
+	// the two anchors on screen, so the weapon tag and the head stack cannot overlap.
+	const float kWeaponEspLegHeight       = 8.0f;
+
 	// Standing player bbox half-width (bg_pmove.c: pm->mins[0] = -15). HEALTH ESP uses this to
 	// keep the bar from exceeding the projected player model on screen.
 	const float kPlayerBboxHalfWidth      = 15.0f;
@@ -301,6 +307,43 @@ namespace q3
 	};
 
 	// ------------------------------------------------------------------------------------------
+	// refEntity_t + the renderfx bits - cgame/tr_types.h. The entity the WEAPON ESP's 3D Model
+	// mode pushes into the scene through the engine's own renderer (see weaponEsp.h): the cgame
+	// itself builds these for its effect tags and world items, so it is the stock way to get a
+	// model into a frame. x86 layout, all members int/float/byte - identical on ILP32 and LP64,
+	// which is what lets cl_sdkmirror.cpp check it against tr_types.h on a 64-bit host.
+	// ------------------------------------------------------------------------------------------
+	const int kRtModel               = 0;      // tr_types.h: refEntityType_t RT_MODEL
+	const int kRfMinlight            = 1;      // RF_MINLIGHT - "always have some light"
+	const int kRfThirdPerson         = 2;      // RF_THIRD_PERSON - depth-tested against the world
+	const int kRfFirstPerson         = 4;      // RF_FIRST_PERSON - drawn through the world
+	const int kRfDepthHack           = 8;      // RF_DEPTHHACK - the flag the cgame's own
+	                                          // through-wall effect tags (name tags) are drawn with
+
+	struct refEntity_t
+	{
+		int      reType;            // refEntityType_t: RT_MODEL for a model entity
+		int      renderfx;          // RF_*
+		int      hModel;            // qhandle_t: RE_RegisterModel's return value
+		vec3_t   lightingOrigin;    // RF_LIGHTING_ORIGIN (unused here)
+		float    shadowPlane;       // RF_SHADOW_PLANE (unused here)
+		vec3_t   axis[3];           // rotation vectors; with nonNormalizedAxes, carry scale too
+		unsigned char nonNormalizedAxes;  // qboolean: axes are not unit vectors (scaled model)
+		float    origin[3];
+		int      frame;
+		float    oldorigin[3];
+		int      oldframe;
+		float    backlerp;
+		int      skinNum;
+		int      customSkin;
+		int      customShader;      // 0 = the model's own shaders
+		unsigned char shaderRGBA[4];
+		float    shaderTexCoord[2];
+		float    shaderTime;
+		float    radius;            // RT_SPRITE only
+		float    rotation;          // RT_SPRITE only
+	};
+
 	// syscall numbers - cgameImport_t, cg_public.h. These are the values arriving as args[0] of
 	// the engine's per-VM syscall dispatcher (CL_CgameSystemCalls), which is what vmHook.cpp
 	// detours. Only the ones the hook uses are mirrored; the values are checked against the real
@@ -564,6 +607,29 @@ namespace q3
 	static_assert(offsetof(gameState_t, stringOffsets) == 0, "gameState_t::stringOffsets moved");
 	static_assert(offsetof(gameState_t, stringData) == 4096, "gameState_t::stringData moved");
 	static_assert(offsetof(gameState_t, dataCount) == 20096, "gameState_t::dataCount moved");
+
+	// Offsets per SDK/code/cgame/tr_types.h (retail 1.32b): axis[3] is 36 bytes, and the
+	// 4-byte qboolean after it puts origin at 68. The mirror stores nonNormalizedAxes as an
+	// unsigned char: the three bytes that follow it are padding in the mirror and part of the
+	// qboolean in the real struct, so every field and the 140-byte size line up either way.
+	static_assert(sizeof(refEntity_t) == 140, "refEntity_t does not match Q3 1.32b");
+	static_assert(offsetof(refEntity_t, reType) == 0, "refEntity_t::reType moved");
+	static_assert(offsetof(refEntity_t, renderfx) == 4, "refEntity_t::renderfx moved");
+	static_assert(offsetof(refEntity_t, hModel) == 8, "refEntity_t::hModel moved");
+	static_assert(offsetof(refEntity_t, lightingOrigin) == 12, "refEntity_t::lightingOrigin moved");
+	static_assert(offsetof(refEntity_t, shadowPlane) == 24, "refEntity_t::shadowPlane moved");
+	static_assert(offsetof(refEntity_t, axis) == 28, "refEntity_t::axis moved");
+	static_assert(offsetof(refEntity_t, nonNormalizedAxes) == 64, "refEntity_t::nonNormalizedAxes moved");
+	static_assert(offsetof(refEntity_t, origin) == 68, "refEntity_t::origin moved");
+	static_assert(offsetof(refEntity_t, frame) == 80, "refEntity_t::frame moved");
+	static_assert(offsetof(refEntity_t, oldorigin) == 84, "refEntity_t::oldorigin moved");
+	static_assert(offsetof(refEntity_t, backlerp) == 100, "refEntity_t::backlerp moved");
+	static_assert(offsetof(refEntity_t, skinNum) == 104, "refEntity_t::skinNum moved");
+	static_assert(offsetof(refEntity_t, customSkin) == 108, "refEntity_t::customSkin moved");
+	static_assert(offsetof(refEntity_t, customShader) == 112, "refEntity_t::customShader moved");
+	static_assert(offsetof(refEntity_t, shaderRGBA) == 116, "refEntity_t::shaderRGBA moved");
+	static_assert(offsetof(refEntity_t, radius) == 132, "refEntity_t::radius moved");
+	static_assert(offsetof(refEntity_t, rotation) == 136, "refEntity_t::rotation moved");
 
 	static_assert(sizeof(refdef_t) == 368, "refdef_t does not match Q3 1.32b");
 	static_assert(offsetof(refdef_t, x) == 0, "refdef_t::x moved");
