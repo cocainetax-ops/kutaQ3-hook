@@ -24,36 +24,47 @@ namespace
 
 	// Last-known health per client. Stock 1.32 never puts other players' STAT_HEALTH in the
 	// snapshot (only the local playerState has it); EV_PAIN's eventParm is the remaining HP
-	// at the moment they took damage. Until the first pain event a newly seen player is
-	// assumed at 100. A teleport (respawn) resets to 100. Keyed by client number, dropped
-	// with the level via Reset().
+	// at the moment they took damage. Until the first pain event a newly seen player is an
+	// ESTIMATE at the assumed spawn level (s_spawnHealthAssumption, 100 on stock servers -
+	// SetSpawnHealthAssumption() for servers that scale spawn health), and confirmed is
+	// false so the bar can be drawn as "not measured" instead of a fact. A teleport
+	// (respawn) drops back to the estimate. Nothing between pain events is modelled -
+	// health packs, health regeneration packs and armor never move the value; the next hit
+	// re-measures it (eventParm is an absolute remaining-HP sample, so a healed player jumps
+	// back up on their next pain). Keyed by client number, dropped with the level via Reset().
 	int  s_clientHealth[q3::kMaxClients];
 	int  s_clientLastEvent[q3::kMaxClients];
 	bool s_clientSeen[q3::kMaxClients];
+	bool s_clientHealthConfirmed[q3::kMaxClients];
+
+	int s_spawnHealthAssumption = q3::kDefaultMaxHealth;
 
 	void ResetHealthHistory()
 	{
 		for (int i = 0; i < q3::kMaxClients; ++i)
 		{
-			s_clientHealth[i]    = q3::kDefaultMaxHealth;
-			s_clientLastEvent[i] = 0;
-			s_clientSeen[i]      = false;
+			s_clientHealth[i]          = s_spawnHealthAssumption;
+			s_clientLastEvent[i]       = 0;
+			s_clientSeen[i]            = false;
+			s_clientHealthConfirmed[i] = false;
 		}
 	}
 
-	int UpdateClientHealth(int clientNum, const q3::entityState_t& e, bool teleported)
+	int UpdateClientHealth(int clientNum, const q3::entityState_t& e, bool teleported, bool& confirmed)
 	{
 		if (clientNum < 0 || clientNum >= q3::kMaxClients)
-			return q3::kDefaultMaxHealth;
+		{
+			confirmed = false;
+			return s_spawnHealthAssumption;
+		}
 
 		if (!s_clientSeen[clientNum])
 		{
-			s_clientHealth[clientNum]    = q3::kDefaultMaxHealth;
-			s_clientLastEvent[clientNum] = 0;
-			s_clientSeen[clientNum]      = true;
+			s_clientSeen[clientNum]            = true;
+			s_clientHealthConfirmed[clientNum] = false;
 		}
 		if (teleported)
-			s_clientHealth[clientNum] = q3::kDefaultMaxHealth;
+			s_clientHealthConfirmed[clientNum] = false;
 
 		const int ev = e.event & ~q3::kEvEventBits;
 		if (ev == q3::kEvPain && e.event != s_clientLastEvent[clientNum])
@@ -61,10 +72,20 @@ namespace
 			int hp = e.eventParm;
 			if (hp < 1)   hp = 1;
 			if (hp > 200) hp = 200;
-			s_clientHealth[clientNum]    = hp;
-			s_clientLastEvent[clientNum] = e.event;
+			s_clientHealth[clientNum]          = hp;
+			s_clientLastEvent[clientNum]       = e.event;
+			s_clientHealthConfirmed[clientNum] = true;
 		}
-		return s_clientHealth[clientNum];
+
+		if (s_clientHealthConfirmed[clientNum])
+		{
+			confirmed = true;
+			return s_clientHealth[clientNum];
+		}
+		// not measured yet: the current assumption, live - an unconfirmed bar tracks a
+		// mid-session change of HealthEspSpawnHealth without waiting for a respawn
+		confirmed = false;
+		return s_spawnHealthAssumption;
 	}
 
 	// ---- limits that keep a stale or bogus sample from throwing a tag across the map -------------
@@ -383,6 +404,18 @@ namespace
 
 // =============================================================================================== //
 
+void NameEsp::SetSpawnHealthAssumption(int hp)
+{
+	if (hp < 1)   hp = 1;
+	if (hp > 200) hp = 200;
+	s_spawnHealthAssumption = hp;
+}
+
+int NameEsp::SpawnHealthAssumption()
+{
+	return s_spawnHealthAssumption;
+}
+
 bool NameEsp::CaptureWorldRefdef(const q3::refdef_t& candidate, q3::refdef_t& captured)
 {
 	if (!RefdefUsable(candidate))
@@ -629,7 +662,7 @@ bool NameEsp::Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* 
 
 		const bool teleported = (prev != NULL) &&
 		                        (((prev->eFlags ^ e.eFlags) & q3::kEfTeleport) != 0);
-		tag.health = UpdateClientHealth(clientNum, e, teleported);
+		tag.health = UpdateClientHealth(clientNum, e, teleported, tag.healthConfirmed);
 
 		// Distance-based fade for HEALTH ESP: |cg.refdef.vieworg - cent->lerpOrigin|.
 		const float dx = s_frame.view.origin[0] - tag.lerpOrigin[0];

@@ -94,9 +94,13 @@ namespace NameEsp
 		float lerpOrigin[3];  // cent->lerpOrigin: the interpolated feet/origin the model sits on
 		int   clientNum;
 		int   team;           // Team
-		int   health;         // last known HP (100 until EV_PAIN; 1..200). Stock Q3 does not
-		                      // network other players' STAT_HEALTH - EV_PAIN's eventParm is
-		                      // the only snapshot field that carries it.
+		int   health;         // last known HP (assumed spawn level until EV_PAIN; 1..200). Stock
+		                      // Q3 does not network other players' STAT_HEALTH - EV_PAIN's
+		                      // eventParm is the only snapshot field that carries it, so this is
+		                      // a damage-derived estimate, never a live readout.
+		bool  healthConfirmed;// true once an EV_PAIN has been sampled since spawn/respawn.
+		                      // false = health is the assumed spawn level (see
+		                      // SetSpawnHealthAssumption), not a measurement.
 		float distance;       // |cg.refdef.vieworg - lerpOrigin|, world units
 	};
 
@@ -166,6 +170,16 @@ namespace NameEsp
 	bool CaptureWorldRefdef(const q3::refdef_t& candidate, q3::refdef_t& captured);
 
 	bool Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* refdef = NULL);
+
+	// The HP a freshly seen or just respawned player is assumed to have until the first EV_PAIN
+	// is sampled for them. Stock 1.32 spawns everyone at 100 and never networks the value, so
+	// the assumption is only right for stock servers; servers that scale spawn health (e.g.
+	// handicap-spawn mods) should set this to match. Clamped to 1..200, the same range the
+	// tracker applies to pain samples. Unconfirmed players track the CURRENT value, so a change
+	// here moves every not-yet-hit bar immediately; confirmed (measured) players are untouched.
+	// Called from the SwapBuffers hook with the live config value (HealthEspSpawnHealth).
+	void SetSpawnHealthAssumption(int hp);
+	int  SpawnHealthAssumption();
 
 	// Drop the frame and the per-client smoothing history: the cgame shut down or was unloaded, so
 	// the last gathered data is about a level that no longer exists.

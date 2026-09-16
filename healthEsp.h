@@ -12,9 +12,20 @@
 // ----
 // Positions, the view and the player list come from NameEsp::Gather() (same snapshot / refdef
 // the names use). Other players' STAT_HEALTH is not in a stock 1.32 snapshot - only EV_PAIN's
-// eventParm carries remaining HP - so the tag's health is 100 until the first pain event, then
-// tracks that. Distance is |cg.refdef.vieworg - cent->lerpOrigin|; bars scale down and fade out
-// with it instead of drawing everyone at full size and opacity.
+// eventParm carries remaining HP - so the bar is a damage-derived ESTIMATE, not a live health
+// readout. It has two states, both visible at a glance:
+//
+//   unconfirmed (no EV_PAIN since spawn/respawn): the value is the assumed spawn level
+//     (NameEsp::SpawnHealthAssumption(), 100 on stock servers), drawn as neutral hatching so a
+//     "never hit" player is never mistaken for a "measured at 100" one;
+//
+//   confirmed (at least one EV_PAIN sampled): solid green-to-red fill at the last sample's
+//     remaining HP. Nothing between hits is modelled - health packs, health regeneration
+//     packs and armor do not move the bar; the next hit re-measures it (eventParm is an
+//     absolute sample, so a healed player jumps back up on their next pain).
+//
+// Distance is |cg.refdef.vieworg - cent->lerpOrigin|; bars scale down and fade out with it
+// instead of drawing everyone at full size and opacity.
 //
 // The GL half lives in healthEsp.cpp; the layout maths below is header-only so the tests can
 // exercise stacking / fade / colour without a GL context.
@@ -108,6 +119,8 @@ namespace HealthEsp
 		float alpha;
 		unsigned char fill[3];
 		bool  visible;
+		bool  confirmed;    // false = value is the assumed spawn level: Draw() renders the
+		                    // fill as neutral hatching instead of the solid green-to-red
 	};
 
 	// Overlay-space bar centred on overlayP (already converted from ProjectWorldToScreen the
@@ -122,6 +135,7 @@ namespace HealthEsp
 		out.alpha = 0.0f;
 		out.fill[0] = out.fill[1] = out.fill[2] = 0;
 		out.visible = false;
+		out.confirmed = false;
 
 		if (!overlayP.inView)
 			return false;
@@ -133,6 +147,7 @@ namespace HealthEsp
 
 		const float ratio = HealthRatio(tag.health);
 		HealthColor(ratio, out.fill);
+		out.confirmed = tag.healthConfirmed;
 
 		float modelW = 24.0f;
 		{
