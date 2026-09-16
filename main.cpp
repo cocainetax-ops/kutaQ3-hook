@@ -36,6 +36,7 @@
 // kutaQ3 hook - NAME ESP (see nameEsp.h). Player names drawn above every other player, through
 // walls, with the GL::Font text renderer. Gathered and drawn from the SwapBuffers hook.
 #include "nameEsp.h"
+#include "distanceEsp.h"
 #include "healthEsp.h"
 // =============================================================================================== //
 
@@ -1262,15 +1263,46 @@ void RenderKutaQ3Menu()
 				// case - not a gathering failure either way.
 				if (esp.valid && esp.playerCount > 0)
 				{
-					const NameEsp::DrawStats& st = NameEsp::LastDrawStats();
-					ImGui::TextDisabled("%d drawn (%d ahead, %d at edge, %d behind)",
-					                    st.drawn, st.inView, st.edge, st.behind);
-				}
+				const NameEsp::DrawStats& st = NameEsp::LastDrawStats();
+				ImGui::TextDisabled("%d drawn (%d ahead, %d at edge, %d behind)",
+				                    st.drawn, st.inView, st.edge, st.behind);
 			}
+		}
 
-			ImGui::Spacing();
+		ImGui::Spacing();
 
-			// HEALTH ESP (healthEsp.h): green-to-red 2D bars above the head. Same player list
+		// DISTANCE ESP (distanceEsp.h): the distance in metres ("128M") above every other
+		// player, same face and full size as NAME ESP, stacked in its own row by
+		// NameEsp::ComputeEspRows(): the name on top, the distance under it, and the health
+		// bar on the last row when all three are on - so nothing overlaps whatever the menu
+		// has enabled. Scales down and fades out with range.
+		ImGui::Checkbox("Distance ESP (OpenGL)", &cfg.distanceEsp);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Distance to every other player in metres (\"128M\"), centred\n"
+			                  "above their head in the same font as the name ESP. Stacked\n"
+			                  "right under the name when it is on; when Health ESP is also on\n"
+			                  "the bar drops to the last row, so nothing overlaps. Scales\n"
+			                  "down and fades out with distance.");
+		if (cfg.distanceEsp)
+		{
+			const NameEsp::Frame& desp = NameEsp::Current();
+			if (desp.valid && desp.playerCount > 0)
+			{
+				const DistanceEsp::DrawStats& st = DistanceEsp::LastDrawStats();
+				ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d distance%s on screen",
+				                   st.drawn, st.drawn == 1 ? "" : "s");
+				ImGui::TextDisabled("%d ahead, %d at edge, %d behind, %d faded out",
+				                    st.inView, st.edge, st.behind, st.faded);
+			}
+			else if (desp.valid)
+				ImGui::TextDisabled("no other players in snapshot");
+			else
+				ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
+		}
+
+		ImGui::Spacing();
+
+		// HEALTH ESP (healthEsp.h): green-to-red 2D bars above the head. Same player list
 			// as NAME ESP. When both are on the bar sits underneath the name, thinner than
 			// the projected player model, and fades/scales with distance. The value is a
 			// damage-derived estimate (stock Q3 never sends other players' HP) - unmeasured
@@ -1486,12 +1518,15 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	// Gather() - one int store, and it keeps the estimate honest without a second code path.
 	NameEsp::SetSpawnHealthAssumption(Config::g_Settings.healthEspSpawnHealth);
 
-	if (Config::g_Settings.nameEsp || Config::g_Settings.healthEsp)
+	if (Config::g_Settings.nameEsp || Config::g_Settings.distanceEsp || Config::g_Settings.healthEsp)
 		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
 	else if (NameEsp::Current().valid)
 		NameEsp::Reset();
 
+	// Draw order follows the on-screen row stack (NameEsp::ComputeEspRows): the name, then the
+	// distance, then the health bar on the last row. Each feature checks its own toggle.
 	NameEsp::Draw();
+	DistanceEsp::Draw();
 	HealthEsp::Draw();
 
 	// Build + render the frame inside the legacy state guard.

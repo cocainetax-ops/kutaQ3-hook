@@ -20,6 +20,7 @@ void Config::ResetToDefaults(Settings& s)
 	s.chamsStyle             = 0;
 	s.neonEnabled            = false;
 	s.nameEsp                = true;
+	s.distanceEsp            = true;
 	s.healthEsp              = true;
 	s.healthEspSpawnHealth   = 100;
 	s.logShaders             = true;
@@ -180,6 +181,7 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 		if (EqualsNoCase(key, "LogShaders")) { ParseBool(value, s.logShaders); return; }
 		if (EqualsNoCase(key, "NeonEnabled")) { ParseBool(value, s.neonEnabled); return; }
 		if (EqualsNoCase(key, "NameEspEnabled")) { ParseBool(value, s.nameEsp); return; }
+		if (EqualsNoCase(key, "DistanceEspEnabled")) { ParseBool(value, s.distanceEsp); return; }
 		if (EqualsNoCase(key, "HealthEspEnabled")) { ParseBool(value, s.healthEsp); return; }
 		if (EqualsNoCase(key, "HealthEspSpawnHealth"))
 		{
@@ -299,6 +301,7 @@ bool Config::Save()
 	file << "ChamsStyle=" << s.chamsStyle << "          ; 0 = solid, 1 = wireframe\n";
 	file << "NeonEnabled=" << (s.neonEnabled ? 1 : 0) << "        ; 1 = neon bloom chams override the style above\n";
 	file << "NameEspEnabled=" << (s.nameEsp ? 1 : 0) << "     ; 1 = player names on screen (reads the cgame VM directly)\n";
+	file << "DistanceEspEnabled=" << (s.distanceEsp ? 1 : 0) << " ; 1 = distance in metres above players (scaled + faded with range)\n";
 	file << "HealthEspEnabled=" << (s.healthEsp ? 1 : 0) << "   ; 1 = health bars above players (last EV_PAIN sample, estimated until hit)\n";
 	file << "HealthEspSpawnHealth=" << s.healthEspSpawnHealth << " ; 1..200, HP an unmeasured player (no hit since spawn) is drawn at\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";

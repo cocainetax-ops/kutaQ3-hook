@@ -126,6 +126,37 @@ namespace NameEsp
 		bool  inView;
 	};
 
+	// --------------------------------------------------------------------------------------------
+	// The stack the ESP overlays draw above a player's head anchor. Each enabled text feature
+	// takes one 16px row (FONT_HEIGHT + 2px gap), top to bottom: NAME ESP, then DISTANCE ESP,
+	// and the HEALTH ESP bar always sits on the last row. A disabled feature takes no row, so
+	// the ones that are on pack up against the anchor:
+	//
+	//   name + health            -> name at 0, bar at 16
+	//   name + distance + health -> name at 0, distance at 16, bar at 32 (last row)
+	//
+	// Every feature reads its offset from ComputeEspRows() - that is what keeps the three
+	// overlays from overlapping whatever combination the menu has enabled.
+	struct EspRows
+	{
+		float name;      // px down from the head anchor: top of the name text
+		float distance;  // px down from the head anchor: top of the distance text
+		float bar;       // px down from the head anchor: top of the health bar
+	};
+
+	const float kEspRowHeight = 16.0f;   // FONT_HEIGHT (14, see glText.h) + 2px gap
+
+	inline EspRows ComputeEspRows(bool nameOn, bool distanceOn)
+	{
+		EspRows rows;
+		rows.name     = 0.0f;
+		rows.distance = nameOn ? kEspRowHeight : 0.0f;
+		rows.bar      = rows.distance;
+		if (distanceOn)
+			rows.bar += kEspRowHeight;
+		return rows;
+	}
+
 	struct Frame
 	{
 		bool      valid;
