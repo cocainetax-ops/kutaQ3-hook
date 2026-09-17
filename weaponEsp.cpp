@@ -952,7 +952,7 @@ void WeaponEsp::Draw()
 				if (icon == WeaponEsp::IconOk)
 				{
 					// 1px black outline for readability, then the icon itself
-					GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
+					//GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
 
 					glEnable(GL_TEXTURE_2D);
 					glBindTexture(GL_TEXTURE_2D, tex.tex);
@@ -973,7 +973,7 @@ void WeaponEsp::Draw()
 					// No texture for this weapon: mark the position with a neutral chip, and count
 					// WHY there is none - "the paks do not have it", "the file is not readable" and
 					// "GL refused the upload" are three very different reports in the menu.
-					GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
+					//GL::DrawOutlineAlpha(x, y, size, size, 1.0f, black, alpha);
 					unsigned char chipRgb[3] = { kChipRgb[0], kChipRgb[1], kChipRgb[2] };
 					if (!p.inView)
 						Dim(chipRgb);
