@@ -385,20 +385,27 @@ namespace
 	}
 
 	// The game directory: the folder quake3.exe sits in, where baseq3 and the mod dirs live.
+	// Fixed: the original loop broke on the FIRST '\\' (e.g. "F:\Quake3\quake3.exe"
+	// truncated to "F:\") so the pak search walked the drive root instead of the
+	// game folder. Use the LAST separator and keep the trailing slash, handling both
+	// '\' and '/'.
 	const char* GameDir()
 	{
 		static char gameDir[520];
 		if (gameDir[0] == 0)
 		{
 			GetModuleFileNameA(NULL, gameDir, sizeof(gameDir) - 1);
+			gameDir[sizeof(gameDir) - 1] = 0;
+			char* lastSlash = NULL;
 			for (char* p = gameDir; *p; ++p)
 			{
-				if (*p == '\\')
-				{
-					p[1] = 0;
-					break;
-				}
+				if (*p == '\\' || *p == '/')
+					lastSlash = p;
 			}
+			if (lastSlash)
+				lastSlash[1] = 0;
+			else
+				gameDir[0] = 0;
 		}
 		return gameDir;
 	}
@@ -416,7 +423,11 @@ namespace
 		modCount  = 0;
 
 		char pattern[600];
-		snprintf(pattern, sizeof(pattern), "%s\\*", gameDir);
+		const size_t gdLen = strlen(gameDir);
+		if (gdLen && (gameDir[gdLen - 1] == '\\' || gameDir[gdLen - 1] == '/'))
+			snprintf(pattern, sizeof(pattern), "%s*", gameDir);
+		else
+			snprintf(pattern, sizeof(pattern), "%s\\*", gameDir);
 		WIN32_FIND_DATAA fd;
 		HANDLE find = FindFirstFileA(pattern, &fd);
 		if (find != INVALID_HANDLE_VALUE)
@@ -478,10 +489,18 @@ namespace
 	// smaller path buffers it is joining them into.)
 	void JoinPath(char* out, size_t outSize, const char* dir, const char* name)
 	{
+		// Joins "<dir><name>" but avoids a doubled separator when dir already ends
+		// with '\' or '/' and name begins with one (e.g. GameDir "F:\\Quake3\\" + "\\*.pk3"
+		// would otherwise become "F:\\Quake3\\\\*.pk3").
 		size_t n = 0;
+		size_t dirLen = 0;
+		for (; dir && dir[dirLen]; ++dirLen) {}
+		const bool dirSlash = dirLen && (dir[dirLen - 1] == '\\' || dir[dirLen - 1] == '/');
+		const bool nameSlash = name && (name[0] == '\\' || name[0] == '/');
+		size_t nameStart = (dirSlash && nameSlash) ? 1 : 0;
 		for (size_t i = 0; dir && dir[i] && n + 1 < outSize; ++i)
 			out[n++] = dir[i];
-		for (size_t i = 0; name && name[i] && n + 1 < outSize; ++i)
+		for (size_t i = nameStart; name && name[i] && n + 1 < outSize; ++i)
 			out[n++] = name[i];
 		out[n] = 0;
 	}
@@ -504,15 +523,25 @@ namespace
 		*out   = 0;
 		*outLen = 0;
 
-		char file[160];
+		char candidates[4][160];
+		int candCount = 0;
 		if (strrchr(shaderName, '.'))
 		{
-			// already a filename (a mod spells the icon with an extension)
-			snprintf(file, sizeof(file), "%s", shaderName);
+			// already a filename (a mod spells the icon with an extension) - try it alone
+			snprintf(candidates[0], sizeof(candidates[0]), "%s", shaderName);
+			candCount = 1;
 		}
 		else
 		{
-			snprintf(file, sizeof(file), "%s.tga", shaderName);
+			// The engine can store the same icon as .tga, .jpg or .png (Q3's art is .tga
+			// but many mods and ioquake3 builds ship .jpg). Try all so a TC that replaced
+			// "icons/iconw_rocket.tga" with "icons/iconw_rocket.jpg" still has its icon.
+			snprintf(candidates[0], sizeof(candidates[0]), "%s.tga", shaderName);
+			snprintf(candidates[1], sizeof(candidates[1]), "%s.jpg", shaderName);
+			snprintf(candidates[2], sizeof(candidates[2]), "%s.png", shaderName);
+			// also try extension-less in case a shader name is a loose file without one
+			snprintf(candidates[3], sizeof(candidates[3]), "%s", shaderName);
+			candCount = 4;
 		}
 
 		char roots[kMaxIconRoots][560];
@@ -520,55 +549,60 @@ namespace
 		const int rootCount = CollectRoots(roots, modCount);
 		LogIconEnvironment(modCount);
 
-		for (int r = 0; r < rootCount; ++r)
+		for (int c = 0; c < candCount; ++c)
 		{
-			const bool gameRoot = (roots[r][0] == 0);
-			const char* root = gameRoot ? GameDir() : roots[r];
-			++search.dirsLooked;
+			const char* file = candidates[c];
+			for (int r = 0; r < rootCount; ++r)
+			{
+				const bool gameRoot = (roots[r][0] == 0);
+				const char* root = gameRoot ? GameDir() : roots[r];
+				if (c == 0)
+					++search.dirsLooked;
 
-			// paks inside the dir, highest number first: the engine loads pakN ascending, so the
-			// highest-numbered pak is the last one loaded and wins
-			char paks[16][800];
-			int pakCount = 0;
-			{
-				char pattern[720];
-				JoinPath(pattern, sizeof(pattern), root, "\\*.pk3");
-				WIN32_FIND_DATAA fd;
-				HANDLE find = FindFirstFileA(pattern, &fd);
-				if (find != INVALID_HANDLE_VALUE)
+				// paks inside the dir, highest number first: the engine loads pakN ascending, so the
+				// highest-numbered pak is the last one loaded and wins
+				char paks[16][800];
+				int pakCount = 0;
 				{
-					do
+					char pattern[720];
+					JoinPath(pattern, sizeof(pattern), root, "\\*.pk3");
+					WIN32_FIND_DATAA fd;
+					HANDLE find = FindFirstFileA(pattern, &fd);
+					if (find != INVALID_HANDLE_VALUE)
 					{
-						if (pakCount >= 16)
-							break;
-						if (fd.cFileName[0])
+						do
 						{
-							JoinPath(paks[pakCount], sizeof(paks[pakCount]), root, "\\");
-							JoinPath(paks[pakCount], sizeof(paks[pakCount]), paks[pakCount], fd.cFileName);
-							++pakCount;
+							if (pakCount >= 16)
+								break;
+							if (fd.cFileName[0])
+							{
+								JoinPath(paks[pakCount], sizeof(paks[pakCount]), root, "\\");
+								JoinPath(paks[pakCount], sizeof(paks[pakCount]), paks[pakCount], fd.cFileName);
+								++pakCount;
+							}
 						}
+						while (FindNextFileA(find, &fd) && pakCount < 16);
+						FindClose(find);
 					}
-					while (FindNextFileA(find, &fd) && pakCount < 16);
-					FindClose(find);
 				}
-			}
-			for (int p = pakCount - 1; p >= 0; --p)
-			{
-				++search.paksLooked;
-				if (LoadPakBytes(paks[p], file, out, outLen))
+				for (int p = pakCount - 1; p >= 0; --p)
 				{
-					CopyIconName(search.foundIn, sizeof(search.foundIn), paks[p]);
+					if (c == 0) ++search.paksLooked; else search.paksLooked++;
+					if (LoadPakBytes(paks[p], file, out, outLen))
+					{
+						CopyIconName(search.foundIn, sizeof(search.foundIn), paks[p]);
+						return true;
+					}
+				}
+
+				char loose[800];
+				JoinPath(loose, sizeof(loose), root, "\\");
+				JoinPath(loose, sizeof(loose), loose, file);
+				if (LoadLooseFile(loose, out, outLen))
+				{
+					CopyIconName(search.foundIn, sizeof(search.foundIn), loose);
 					return true;
 				}
-			}
-
-			char loose[800];
-			JoinPath(loose, sizeof(loose), root, "\\");
-			JoinPath(loose, sizeof(loose), loose, file);
-			if (LoadLooseFile(loose, out, outLen))
-			{
-				CopyIconName(search.foundIn, sizeof(search.foundIn), loose);
-				return true;
 			}
 		}
 
