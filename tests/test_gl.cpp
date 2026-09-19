@@ -16,7 +16,6 @@
 
 #include "nameEsp.h"
 #include "distanceEsp.h"
-#include "healthEsp.h"
 #include "weaponEsp.h"
 #include "fake_engine.h"
 #include "config.h"
@@ -25,6 +24,7 @@
 #include "glText.h"   // FONT_HEIGHT - the full-size face the name ESP (and the closest
                       // distance tag) is drawn in
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -44,6 +44,16 @@ namespace
 	unsigned int PackRgb(const unsigned char rgb[3])
 	{
 		return ((unsigned int)rgb[0] << 16) | ((unsigned int)rgb[1] << 8) | (unsigned int)rgb[2];
+	}
+
+	// |a - b|: the distance the fade is driven by, computed here so the check is against an
+	// independent value rather than the ESP's own helper.
+	float DistanceBetween(const float a[3], const float b[3])
+	{
+		const float dx = a[0] - b[0];
+		const float dy = a[1] - b[1];
+		const float dz = a[2] - b[2];
+		return sqrtf(dx * dx + dy * dy + dz * dz);
 	}
 
 	// Three other players and one behind the viewer. The view is at the origin looking down +X
@@ -206,7 +216,7 @@ namespace
 	}
 
 	// the (x, y) of the first vertex of the first GL_QUADS in the stream - with the ESP draws
-	// in order, that is the first player's health-bar background
+	// in order, that is the first quad-issuing overlay's first bar/chip
 	bool FirstQuadOrigin(float& outX, float& outY)
 	{
 		std::vector<Rec::Call>& calls = Rec::Calls();
@@ -795,41 +805,6 @@ static void TestChestAnchorHoldsItsGround()
 	CHECK_TRUE(CloserTo(drawnX, drawnY, headX, headY, chestX, chestY), "and it is back above the head");
 }
 
-static void TestHealthBarsDrawn()
-{
-	Section("HEALTH ESP drawing (green-to-red bars, stacked under names)");
-
-	CHECK_TRUE(BuildWorld(), "frame gathered");
-	Rec::CurrentDC() = NULL;
-	Rec::Reset(0, 0, kVpW, kVpH);
-	Config::g_Settings.nameEsp     = false;
-	Config::g_Settings.distanceEsp = false;
-	Config::g_Settings.healthEsp   = true;
-	HealthEsp::ResetDrawState();
-	HealthEsp::Draw();
-
-	CHECK_TRUE(Rec::Count("glBegin") >= 2, "health bars issued filled quads");
-	CHECK_TRUE(Rec::Count("glColor4ub") >= 2, "bars use alpha colour");
-	CHECK_INT(Rec::Count("glCallLists"), 0, "health ESP does not print names");
-	const HealthEsp::DrawStats& st = HealthEsp::LastDrawStats();
-	CHECK_TRUE(st.drawn >= 2, "two players ahead of the viewer get bars");
-
-	// stacked under the name: both features on, bar y is below the name raster
-	Rec::Reset(0, 0, kVpW, kVpH);
-	Config::g_Settings.nameEsp     = true;
-	Config::g_Settings.distanceEsp = false;
-	Config::g_Settings.healthEsp   = true;
-	NameEsp::ResetDrawState();
-	NameEsp::Draw();
-	HealthEsp::Draw();
-	CHECK_TRUE(CountTextCalls("Bitterman") >= 1, "name still drawn when both ESPs are on");
-	CHECK_TRUE(HealthEsp::LastDrawStats().drawn >= 1, "bar still drawn when both ESPs are on");
-
-	Config::g_Settings.healthEsp = false;
-	HealthEsp::Draw();
-	CHECK_INT(HealthEsp::LastDrawStats().drawn, 0, "feature off -> no bars");
-}
-
 // =============================================================================================== //
 // DISTANCE ESP: the "NM" text, its row in the stack, and the scale + fade with range
 // =============================================================================================== //
@@ -843,7 +818,6 @@ static void TestDistanceTagsDrawn()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp     = false;
 	Config::g_Settings.distanceEsp = true;
-	Config::g_Settings.healthEsp   = false;
 	DistanceEsp::ResetDrawState();
 	DistanceEsp::Draw();
 
@@ -929,22 +903,19 @@ static void TestDistanceTagsDrawn()
 	CHECK_INT(z.behind, 0, "feature off -> zero behind");
 }
 
-static void TestDistanceStackingWithAllThree()
+static void TestDistanceStacksUnderName()
 {
-	Section("DISTANCE ESP stacking (name, distance, health bar each in their own row)");
+	Section("DISTANCE ESP stacking (the name on the anchor, the distance one row below it)");
 
 	CHECK_TRUE(BuildWorld(), "frame gathered");
 	Rec::CurrentDC() = (void*)(size_t)0xD157B;
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp     = true;
 	Config::g_Settings.distanceEsp = true;
-	Config::g_Settings.healthEsp   = true;
 	NameEsp::ResetDrawState();
 	DistanceEsp::ResetDrawState();
-	HealthEsp::ResetDrawState();
 	NameEsp::Draw();
 	DistanceEsp::Draw();
-	HealthEsp::Draw();
 
 	const NameEsp::PlayerTag* b1 = FindTag(1);
 	CHECK_TRUE(b1 != NULL, "player 1 is in the frame");
@@ -955,8 +926,7 @@ static void TestDistanceStackingWithAllThree()
 	CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, p),
 	           "head projects");
 
-	// where each row should sit: the name on the anchor, the distance one row below it,
-	// the health bar on the last row, two rows below
+	// where each row should sit: the name on the anchor, the distance one row below it
 	float nameX = 0.0f, nameY = 0.0f, distX = 0.0f, distY = 0.0f;
 	ExpectedCentreAt(p, "Bitterman", nameX, nameY);
 	ExpectedDistanceAt(p, "183M", NameEsp::kEspRowHeight, (float)FONT_HEIGHT, distX, distY);
@@ -987,15 +957,7 @@ static void TestDistanceStackingWithAllThree()
 	}
 	CHECK_TRUE(sawName, "the name was drawn");
 	CHECK_TRUE(sawDist, "the distance was drawn");
-
-	// the health bar - the first quad in the stream - is on the LAST row, two rows below
-	// the anchor, with the name and distance between it and the head
-	float barX = 0.0f, barY = 0.0f;
-	CHECK_TRUE(FirstQuadOrigin(barX, barY), "a health bar quad was issued");
-	CHECK_NEAR(barY, p.y + 2.0f * NameEsp::kEspRowHeight, 0.02,
-	           "with all three on, the bar is on the last row");
-	CHECK_NEAR(barY - nameY, 2.0f * (double)NameEsp::kEspRowHeight, 0.02,
-	           "bar exactly two rows below the name");
+	CHECK_INT(Rec::Count("glBegin"), 0, "no bar/chip quads: nothing but the two text rows");
 }
 
 static void TestDistanceScaleAndFade()
@@ -1020,7 +982,7 @@ static void TestDistanceScaleAndFade()
 	if (!tag)
 		return;
 	{
-		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag->lerpOrigin);
+		const float want = DistanceBetween(NameEsp::Current().view.origin, tag->lerpOrigin);
 		CHECK_NEAR(tag->distance, want, 0.01, "distance is |vieworg - lerpOrigin|");
 	}
 
@@ -1028,7 +990,6 @@ static void TestDistanceScaleAndFade()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp     = false;
 	Config::g_Settings.distanceEsp = true;
-	Config::g_Settings.healthEsp   = false;
 	DistanceEsp::ResetDrawState();
 
 	// first frame: the fresh context bakes all six faces, so this is where the tag's face
@@ -1111,7 +1072,6 @@ static void TestWeaponTextAtLeg()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp      = false;
 	Config::g_Settings.distanceEsp  = false;
-	Config::g_Settings.healthEsp    = false;
 	Config::g_Settings.weaponEsp    = true;
 	Config::g_Settings.weaponEspStyle = 0;        // text
 	WeaponEsp::ResetDrawState();
@@ -1206,7 +1166,6 @@ static void TestWeaponIconChips()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp      = false;
 	Config::g_Settings.distanceEsp  = false;
-	Config::g_Settings.healthEsp    = false;
 	Config::g_Settings.weaponEsp    = true;
 	Config::g_Settings.weaponEspStyle = 1;        // icon
 	WeaponEsp::ResetDrawState();
@@ -1275,16 +1234,13 @@ static void TestWeaponStackingBelowHeadStack()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp      = true;
 	Config::g_Settings.distanceEsp  = true;
-	Config::g_Settings.healthEsp    = true;
 	Config::g_Settings.weaponEsp    = true;
 	Config::g_Settings.weaponEspStyle = 0;        // text
 	NameEsp::ResetDrawState();
 	DistanceEsp::ResetDrawState();
-	HealthEsp::ResetDrawState();
 	WeaponEsp::ResetDrawState();
 	NameEsp::Draw();
 	DistanceEsp::Draw();
-	HealthEsp::Draw();
 	WeaponEsp::Draw();
 
 	const NameEsp::PlayerTag* b1 = FindTag(1);
@@ -1296,11 +1252,11 @@ static void TestWeaponStackingBelowHeadStack()
 	CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, b1->origin, head),
 	           "head projects");
 
-	// the head-anchored stack: the name on the anchor, the distance one row below, the bar two
-	// rows below (the lowest head-anchored thing that can be drawn)
+	// the head-anchored stack: the name on the anchor, the distance one row below it (the
+	// lowest head-anchored thing that can be drawn)
 	float nameX = 0.0f, nameY = 0.0f;
 	ExpectedCentreAt(head, "Bitterman", nameX, nameY);
-	const float stackBottom = nameY + 2.0f * NameEsp::kEspRowHeight + 14.0f;
+	const float stackBottom = nameY + NameEsp::kEspRowHeight + 14.0f;
 
 	// the weapon tag: centred on the leg projection - a full model height below the head
 	NameEsp::ScreenPoint leg;
@@ -1322,9 +1278,9 @@ static void TestWeaponStackingBelowHeadStack()
 		CHECK_NEAR(pos->a[0], wantX, 0.02, "the weapon tag is centred on the leg x");
 		CHECK_NEAR(pos->a[1], wantY, 0.02, "the weapon tag is at the leg y");
 		CHECK_TRUE(pos->a[1] > stackBottom,
-		           "the weapon tag sits BELOW the name + distance + health stack, no overlap");
+		           "the weapon tag sits BELOW the name + distance stack, no overlap");
 	}
-	CHECK_TRUE(sawWeapon, "the weapon tag was drawn with all four ESPs on");
+	CHECK_TRUE(sawWeapon, "the weapon tag was drawn with all three ESPs on");
 }
 
 static void TestWeaponScaleAndFade()
@@ -1350,7 +1306,7 @@ static void TestWeaponScaleAndFade()
 	if (!tag)
 		return;
 	{
-		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag->lerpOrigin);
+		const float want = DistanceBetween(NameEsp::Current().view.origin, tag->lerpOrigin);
 		CHECK_NEAR(tag->distance, want, 0.01, "distance is |vieworg - lerpOrigin|");
 	}
 
@@ -1358,7 +1314,6 @@ static void TestWeaponScaleAndFade()
 	Rec::Reset(0, 0, kVpW, kVpH);
 	Config::g_Settings.nameEsp      = false;
 	Config::g_Settings.distanceEsp  = false;
-	Config::g_Settings.healthEsp    = false;
 	Config::g_Settings.weaponEsp    = true;
 	Config::g_Settings.weaponEspStyle = 0;
 	WeaponEsp::ResetDrawState();
@@ -1419,7 +1374,7 @@ static void TestWeaponScaleAndFade()
 
 int main(void)
 {
-	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + weaponEsp.cpp + glText.cpp + glDraw.cpp)\n");
+	printf("kutaQ3 hook tests - ESP drawing (nameEsp.cpp + distanceEsp.cpp + weaponEsp.cpp + glText.cpp + glDraw.cpp)\n");
 
 	TestFontIsBuiltOnce();
 	TestOverlayState();
@@ -1430,9 +1385,8 @@ int main(void)
 	TestDrawStats();
 	TestDrawsNothingWhenItShouldNot();
 	TestFormatSpecifierName();
-	TestHealthBarsDrawn();
 	TestDistanceTagsDrawn();
-	TestDistanceStackingWithAllThree();
+	TestDistanceStacksUnderName();
 	TestDistanceScaleAndFade();
 	TestWeaponTextAtLeg();
 	TestWeaponIconChips();

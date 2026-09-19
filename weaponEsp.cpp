@@ -2,11 +2,11 @@
 // kutaQ3 hook - WEAPON ESP, GL half (see weaponEsp.h for the overview)
 //
 // Renders every other player's current weapon at their leg position, from the hooked
-// SwapBuffers in main.cpp, after the name / distance / health overlays. Text mode draws the
+// SwapBuffers in main.cpp, after the name / distance overlays. Text mode draws the
 // weapon's name in the GL::Font display-list faces (glText.h) the other ESPs use; icon mode
 // draws the cgame's own item icon for that weapon, loaded out of the game's pak files and
 // projected onto the 3D leg anchor. Both scale down and fade out with |vieworg - lerpOrigin|,
-// the same ramp as the DISTANCE and HEALTH ESPs (DistanceEsp::DistanceFade).
+// the same ramp as the DISTANCE ESP (DistanceEsp::DistanceFade).
 //
 // This file is the Win32 half, like nameEsp.cpp: the portable table maths (the bg_itemlist
 // shape scan, the stock fallback, the anchor) and the whole icon pipeline (the pak archive
@@ -867,7 +867,7 @@ void WeaponEsp::Draw()
 
 			// Distance-based scale & alpha fading instead of full size and opacity:
 			// |cg.refdef.vieworg - cent->lerpOrigin| drives both - the same value and the same
-			// ramp as the DISTANCE and HEALTH ESPs (see weaponEsp.h).
+			// ramp as the DISTANCE ESP (see weaponEsp.h).
 			// WP_NONE: the player is carrying nothing - the game shows no weapon there
 			// either, so neither style draws a tag (text mode would hit the same guard in
 			// WeaponName()).

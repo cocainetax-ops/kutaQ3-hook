@@ -73,13 +73,11 @@ namespace q3
 
 	// entityState_t::event: two high bits cycle so an identical event started twice in a row
 	// is distinguishable. Mask them off with ~kEvEventBits to recover the entity_event_t
-	// (bg_public.h). EV_PAIN's eventParm is remaining HP - the only snapshot field that
-	// carries other players' health on stock 1.32.
+	// (bg_public.h).
 	const int kEvEventBit1             = 0x00000100;   // bg_public.h EV_EVENT_BIT1
 	const int kEvEventBit2             = 0x00000200;   // bg_public.h EV_EVENT_BIT2
 	const int kEvEventBits             = 0x00000300;   // EV_EVENT_BIT1 | EV_EVENT_BIT2
 	const int kEvPain                  = 56;           // entity_event_t EV_PAIN (after EV_BULLET)
-	const int kDefaultMaxHealth        = 100;          // standing HP until the first EV_PAIN
 
 	const int kDefaultViewHeight       = 26;      // bg_public.h:50 (standing eye height)
 
@@ -110,10 +108,6 @@ namespace q3
 	// head anchor, kPlayerTagHeight) can never reach: the full player bbox always sits between
 	// the two anchors on screen, so the weapon tag and the head stack cannot overlap.
 	const float kWeaponEspLegHeight       = 8.0f;
-
-	// Standing player bbox half-width (bg_pmove.c: pm->mins[0] = -15). HEALTH ESP uses this to
-	// keep the bar from exceeding the projected player model on screen.
-	const float kPlayerBboxHalfWidth      = 15.0f;
 
 	// ------------------------------------------------------------------------------------------
 	// angle packing - q_shared.h:1082

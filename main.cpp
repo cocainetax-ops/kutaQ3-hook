@@ -37,7 +37,6 @@
 // walls, with the GL::Font text renderer. Gathered and drawn from the SwapBuffers hook.
 #include "nameEsp.h"
 #include "distanceEsp.h"
-#include "healthEsp.h"
 #include "weaponEsp.h"
 // =============================================================================================== //
 
@@ -1274,16 +1273,14 @@ void RenderKutaQ3Menu()
 
 		// DISTANCE ESP (distanceEsp.h): the distance in metres ("128M") above every other
 		// player, same face and full size as NAME ESP, stacked in its own row by
-		// NameEsp::ComputeEspRows(): the name on top, the distance under it, and the health
-		// bar on the last row when all three are on - so nothing overlaps whatever the menu
-		// has enabled. Scales down and fades out with range.
+		// NameEsp::ComputeEspRows(): the name on top, the distance under it - so the two
+		// never overlap whatever the menu has enabled. Scales down and fades out with range.
 		ImGui::Checkbox("Distance ESP (OpenGL)", &cfg.distanceEsp);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Distance to every other player in metres (\"128M\"), centred\n"
-			                  "above their head in the same font as the name ESP. Stacked\n"
-			                  "right under the name when it is on; when Health ESP is also on\n"
-			                  "the bar drops to the last row, so nothing overlaps. Scales\n"
-			                  "down and fades out with distance.");
+			                  "above their head in the same font as the name ESP, stacked\n"
+			                  "right under the name when it is on, so the two never overlap.\n"
+			                  "Scales down and fades out with distance.");
 		if (cfg.distanceEsp)
 		{
 			const NameEsp::Frame& desp = NameEsp::Current();
@@ -1303,46 +1300,6 @@ void RenderKutaQ3Menu()
 
 		ImGui::Spacing();
 
-		// HEALTH ESP (healthEsp.h): green-to-red 2D bars above the head. Same player list
-			// as NAME ESP. When both are on the bar sits underneath the name, thinner than
-			// the projected player model, and fades/scales with distance. The value is a
-			// damage-derived estimate (stock Q3 never sends other players' HP) - unmeasured
-			// players are drawn hatched at the assumed spawn level, measured ones solid.
-			ImGui::Checkbox("Health ESP (OpenGL)", &cfg.healthEsp);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Floating health bars above every other player, through walls.\n"
-			                      "Stock Q3 never sends other players' HP - the value is the last\n"
-			                      "damage sample (EV_PAIN). Solid green-to-red fill = measured;\n"
-			                      "neutral hatched fill = assumed spawn level, not hit since\n"
-			                      "spawn (heals such as health/regen packs and armor are not\n"
-			                      "modelled - the next hit re-measures). Scales down and fades\n"
-			                      "out with distance. When Name ESP is also on, the bar sits\n"
-			                      "underneath the name and stays thinner than the player model.");
-			if (cfg.healthEsp)
-			{
-				// SliderInt - the name this bundled Dear ImGui build exposes (no IntSlider alias here).
-			ImGui::SliderInt("Assumed spawn HP", &cfg.healthEspSpawnHealth, 1, 200);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("What an unmeasured player (no hit since spawn/respawn) is\n"
-			                          "drawn at, as a hatched bar. Stock Q3 spawns at 100; match a\n"
-			                          "server mod that scales spawn health (e.g. handicap spawn).\n"
-			                          "Measured players are unaffected.");
-				const NameEsp::Frame& hesp = NameEsp::Current();
-				if (hesp.valid && hesp.playerCount > 0)
-				{
-					const HealthEsp::DrawStats& st = HealthEsp::LastDrawStats();
-					ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "%d health bar%s",
-					                   st.drawn, st.drawn == 1 ? "" : "s");
-					ImGui::TextDisabled("%d drawn, %d faded/off-screen", st.inView, st.skipped);
-				}
-				else if (hesp.valid)
-					ImGui::TextDisabled("no other players in snapshot");
-				else
-					ImGui::TextDisabled("no frame (not connected / no snapshot yet)");
-			}
-
-			ImGui::Spacing();
-
 			// WEAPON ESP (weaponEsp.h): the player's current weapon at their LEG position. The
 			// weapon number is the stock networked field; the name and icon are resolved through
 			// the cgame's own native item table (the one cg_weapons[] is built from), so a total
@@ -1351,8 +1308,8 @@ void RenderKutaQ3Menu()
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("The other players' current weapon at their LEG position (not\n"
 				                  "the head), through walls - the only ESP anchored below the\n"
-				                  "model, so it never collides with the Name / Distance / Health\n"
-				                  "stack above the head.\n"
+				                  "model, so it never collides with the Name / Distance rows\n"
+				                  "stacked above the head.\n"
 				                  "Weapon number: the stock networked field, the same index the\n"
 				                  "cgame uses for its own cg_weapons[].\n"
 				                  "Name / icon: read from the cgame's native item table (the one\n"
@@ -1574,25 +1531,19 @@ BOOL WINAPI newwglSwapBuffers(HDC hDC)
 	// the tags, and before the OpenGL2 backend installs its own viewport. Gather() reads what the
 	// VM hook captured while the cgame ran this frame (vmHook.h / nameEsp.h); a no-op while the
 	// feature is off or no cgame VM is loaded.
-	// The spawn-health assumption is a live config value (kutaQ3.cfg can be reloaded mid-session
-	// with "Load settings"), so push the current one into the portable half every frame, before
-	// Gather() - one int store, and it keeps the estimate honest without a second code path.
-	NameEsp::SetSpawnHealthAssumption(Config::g_Settings.healthEspSpawnHealth);
-
-	if (Config::g_Settings.nameEsp || Config::g_Settings.distanceEsp || Config::g_Settings.healthEsp ||
+	if (Config::g_Settings.nameEsp || Config::g_Settings.distanceEsp ||
 	    Config::g_Settings.weaponEsp)
 		NameEsp::Gather(Vm::ServerTime(), Vm::Syscall(), Vm::Refdef());
 	else if (NameEsp::Current().valid)
 		NameEsp::Reset();
 
 	// Draw order follows the on-screen row stack (NameEsp::ComputeEspRows): the name, then the
-	// distance, then the health bar on the last row. The weapon ESP is drawn last: it is the
-	// only overlay anchored BELOW the player (leg position), so it can never collide with the
-	// head-anchored stack, and drawing it last keeps it on top at the rare shared edge clamp.
-	// Each feature checks its own toggle.
+	// distance one row below it. The weapon ESP is drawn last: it is the only overlay anchored
+	// BELOW the player (leg position), so it can never collide with the head-anchored stack, and
+	// drawing it last keeps it on top at the rare shared edge clamp. Each feature checks its own
+	// toggle.
 	NameEsp::Draw();
 	DistanceEsp::Draw();
-	HealthEsp::Draw();
 	WeaponEsp::Draw();
 
 	// Build + render the frame inside the legacy state guard.

@@ -51,7 +51,7 @@
 // Leg anchor and stacking
 // -----------------------
 // The tag is centred on lerpOrigin + kWeaponEspLegHeight (q3sdk.h): mid-leg, 8 units above the
-// feet. The NAME / DISTANCE / HEALTH ESPs all stack in rows ABOVE the head anchor
+// feet. The NAME / DISTANCE ESPs stack in rows ABOVE the head anchor
 // (lerpOrigin + kPlayerTagHeight, see NameEsp::ComputeEspRows), which projects above the model;
 // the weapon ESP is the only overlay anchored BELOW the model, so the two stacks can never
 // overlap for the same player - the full standing player bbox (origin z -24..+32, bg_pmove.c)
@@ -62,7 +62,7 @@
 // Instead of drawing everyone's weapon at full size and opacity, the tag scales down and fades
 // out with range, driven by |cg.refdef.vieworg - cent->lerpOrigin| - the view origin the frame
 // was rendered with and the player's interpolated origin, already computed per tag by
-// NameEsp::Gather() as tag.distance. It uses the same ramp as the DISTANCE and HEALTH ESPs
+// NameEsp::Gather() as tag.distance. It uses the same ramp as the DISTANCE ESP
 // (DistanceEsp::DistanceFade: full inside kFadeStartDist, scale kMinScale / alpha 0 at
 // kFadeEndDist), so all the overlays agree about what "far" looks like.
 //
@@ -226,7 +226,7 @@ namespace WeaponEsp
 	const char* LastIconNote();
 
 	// Draw() - the GL half, in weaponEsp.cpp. Called from the hooked SwapBuffers every frame,
-	// after NameEsp::Draw() / DistanceEsp::Draw() / HealthEsp::Draw(); a no-op while the
+	// after NameEsp::Draw() / DistanceEsp::Draw(); a no-op while the
 	// feature is off or nothing is gathered.
 	void Draw();
 }

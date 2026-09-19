@@ -21,8 +21,6 @@ void Config::ResetToDefaults(Settings& s)
 	s.neonEnabled            = false;
 	s.nameEsp                = true;
 	s.distanceEsp            = true;
-	s.healthEsp              = true;
-	s.healthEspSpawnHealth   = 100;
 	s.weaponEsp              = true;
 	s.weaponEspStyle         = 0;
 	s.logShaders             = true;
@@ -184,18 +182,6 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 		if (EqualsNoCase(key, "NeonEnabled")) { ParseBool(value, s.neonEnabled); return; }
 		if (EqualsNoCase(key, "NameEspEnabled")) { ParseBool(value, s.nameEsp); return; }
 		if (EqualsNoCase(key, "DistanceEspEnabled")) { ParseBool(value, s.distanceEsp); return; }
-		if (EqualsNoCase(key, "HealthEspEnabled")) { ParseBool(value, s.healthEsp); return; }
-		if (EqualsNoCase(key, "HealthEspSpawnHealth"))
-		{
-			int hp = s.healthEspSpawnHealth;
-			if (ParseInt(value, hp))
-			{
-				if (hp < 1)   hp = 1;
-				if (hp > 200) hp = 200;
-				s.healthEspSpawnHealth = hp;
-			}
-			return;
-		}
 		if (EqualsNoCase(key, "WeaponEspEnabled")) { ParseBool(value, s.weaponEsp); return; }
 		if (EqualsNoCase(key, "WeaponEspStyle"))
 		{
@@ -216,6 +202,10 @@ static void ApplyKey(Config::Settings& s, const char* section, const char* key, 
 		// NOTE: older kutaQ3.cfg files may still carry a WeaponEspModelScale key (and a
 		// WeaponEspStyle of 2 / "model") from the removed 3D Model style. The scale key is
 		// simply ignored now; a style of 2/"model" is clamped to 1 (Icon) above.
+		//
+		// Same for the removed HEALTH ESP: HealthEspEnabled / HealthEspSpawnHealth are no
+		// longer settings, so an old file's keys fall through here unmatched - ignored, not
+		// an error, and the next Save() writes the file without them.
 	}
 
 	// legacy [Menu] from the first save/load revision - only used if kutaQ3_imgui.ini is missing
@@ -324,8 +314,6 @@ bool Config::Save()
 	file << "NeonEnabled=" << (s.neonEnabled ? 1 : 0) << "        ; 1 = neon bloom chams override the style above\n";
 	file << "NameEspEnabled=" << (s.nameEsp ? 1 : 0) << "     ; 1 = player names on screen (reads the cgame VM directly)\n";
 	file << "DistanceEspEnabled=" << (s.distanceEsp ? 1 : 0) << " ; 1 = distance in metres above players (scaled + faded with range)\n";
-	file << "HealthEspEnabled=" << (s.healthEsp ? 1 : 0) << "   ; 1 = health bars above players (last EV_PAIN sample, estimated until hit)\n";
-	file << "HealthEspSpawnHealth=" << s.healthEspSpawnHealth << " ; 1..200, HP an unmeasured player (no hit since spawn) is drawn at\n";
 	file << "WeaponEspEnabled=" << (s.weaponEsp ? 1 : 0) << "     ; 1 = the player's current weapon at their leg position (read through the cgame's own weapon table)\n";
 	file << "WeaponEspStyle=" << s.weaponEspStyle << "           ; 0 = text (weapon name), 1 = icon (the cgame's item icon for the weapon)\n";
 	file << "LogShaders=" << (s.logShaders ? 1 : 0) << "\n";
