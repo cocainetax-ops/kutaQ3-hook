@@ -14,7 +14,6 @@
 
 #include "nameEsp.h"
 #include "distanceEsp.h"
-#include "healthEsp.h"
 #include "weaponEsp.h"
 #include "fake_engine.h"
 
@@ -31,6 +30,17 @@ extern "C" void AnglesToAxis(const float angles[3], float axis[3][3]);
 #include "check.h"
 
 // =============================================================================================== //
+
+// |a - b|, the distance the fade and the distance ESP are driven by. Computed here rather than
+// pulled from an ESP header: the point of the check is that nameEspCore.cpp's own value matches
+// an independent one.
+static float DistanceBetween(const float a[3], const float b[3])
+{
+	const float dx = a[0] - b[0];
+	const float dy = a[1] - b[1];
+	const float dz = a[2] - b[2];
+	return sqrtf(dx * dx + dy * dy + dz * dz);
+}
 
 static void TestInfoStringParsing()
 {
@@ -1050,213 +1060,9 @@ static void TestTeamColors()
 }
 
 // =============================================================================================== //
+// DISTANCE ESP: the "128M" text, the distance fade, and the row stack the head-anchored ESP
+// overlays share
 
-static void TestHealthEsp()
-{
-	Section("HEALTH ESP - EV_PAIN health, distance fade, bar layout");
-
-	const float here[3]   = { 0.0f, 0.0f, 0.0f };
-	const float none[3]   = { 0.0f, 0.0f, 0.0f };
-	const float angles[3] = { 0.0f, 0.0f, 0.0f };
-	const float botAt[3]  = { 200.0f, 0.0f, 0.0f };
-
-	FakeEngine::Reset();
-	NameEsp::Reset();
-	FakeEngine::SetSnapshotTime(1000);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
-	CHECK_INT(NameEsp::Current().playerCount, 1, "one tag");
-	CHECK_INT(NameEsp::Current().players[0].health, q3::kDefaultMaxHealth,
-	          "unseen player assumed at 100 HP");
-	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
-	          "unseen player is an estimate, not a measurement");
-	CHECK_NEAR(NameEsp::Current().players[0].lerpOrigin[0], botAt[0], 0.01, "lerpOrigin x");
-	CHECK_NEAR(NameEsp::Current().players[0].origin[2], botAt[2] + q3::kPlayerTagHeight, 0.01,
-	           "head origin is lerpOrigin + tag height");
-	{
-		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin,
-		                                        NameEsp::Current().players[0].lerpOrigin);
-		CHECK_NEAR(NameEsp::Current().players[0].distance, want, 0.05,
-		           "distance is |vieworg - lerpOrigin|");
-	}
-
-	FakeEngine::NewServerFrame(1050);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 37);
-	CHECK_TRUE(NameEsp::Gather(1050, FakeEngine::Syscall()), "pain frame gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 37, "EV_PAIN eventParm is remaining HP");
-	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed,
-	          "the first pain confirms the estimate");
-
-	FakeEngine::NewServerFrame(1100);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 12);   // same event bits, must not re-apply
-	CHECK_TRUE(NameEsp::Gather(1100, FakeEngine::Syscall()), "repeat pain gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 37,
-	          "identical event bits do not re-apply the pain");
-
-	FakeEngine::NewServerFrame(1150);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	FakeEngine::SetPlayerEvent(1, q3::kEvPain | q3::kEvEventBit1, 12);
-	CHECK_TRUE(NameEsp::Gather(1150, FakeEngine::Syscall()), "cycled pain gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 12,
-	          "cycled EV_EVENT_BITS re-applies remaining HP");
-
-	FakeEngine::NewServerFrame(1200);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayerEx(1, "\\n\\Hurt\\t\\0", botAt, q3::kEfTeleport);
-	CHECK_TRUE(NameEsp::Gather(1200, FakeEngine::Syscall()), "teleport frame gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, q3::kDefaultMaxHealth,
-	          "EF_TELEPORT resets estimated HP to 100");
-	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
-	          "a respawn drops back to the estimate");
-
-	NameEsp::Reset();
-	FakeEngine::Reset();
-	FakeEngine::SetSnapshotTime(2000);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 5);
-	CHECK_TRUE(NameEsp::Gather(2000, FakeEngine::Syscall()), "post-reset gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 5,
-	          "Reset() drops history so a new pain applies immediately");
-	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed,
-	          "post-reset pain confirms immediately");
-
-	// ---- the spawn-health assumption (Config HealthEspSpawnHealth) ------------------------------
-	// What an unmeasured player is drawn at. Live: an existing unmeasured player tracks it;
-	// a measurement (EV_PAIN) overrides it; a respawn falls back to the CURRENT value.
-	NameEsp::SetSpawnHealthAssumption(40);
-	FakeEngine::Reset();
-	NameEsp::Reset();
-	FakeEngine::SetSnapshotTime(2500);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	CHECK_TRUE(NameEsp::Gather(2500, FakeEngine::Syscall()), "assumption frame gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 40,
-	          "unmeasured player is drawn at the assumption, not 100");
-	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
-	          "the assumption is still an estimate");
-
-	NameEsp::SetSpawnHealthAssumption(60);
-	FakeEngine::NewServerFrame(2550);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	CHECK_TRUE(NameEsp::Gather(2550, FakeEngine::Syscall()), "live assumption frame gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 60,
-	          "an unmeasured player tracks a mid-session change of the assumption");
-
-	NameEsp::SetSpawnHealthAssumption(0);
-	CHECK_INT(NameEsp::SpawnHealthAssumption(), 1, "the assumption clamps to at least 1");
-	NameEsp::SetSpawnHealthAssumption(9999);
-	CHECK_INT(NameEsp::SpawnHealthAssumption(), 200, "the assumption clamps to at most 200");
-	NameEsp::SetSpawnHealthAssumption(40);
-
-	FakeEngine::NewServerFrame(2600);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayer(1, "\\n\\Hurt\\t\\0", botAt);
-	FakeEngine::SetPlayerEvent(1, q3::kEvPain, 15);
-	CHECK_TRUE(NameEsp::Gather(2600, FakeEngine::Syscall()), "assumption pain frame gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 15,
-	          "a measurement overrides the assumption");
-	CHECK_TRUE(NameEsp::Current().players[0].healthConfirmed, "pain confirms");
-
-	FakeEngine::NewServerFrame(2650);
-	FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-	FakeEngine::SetPlayerEx(1, "\\n\\Hurt\\t\\0", botAt, q3::kEfTeleport);
-	CHECK_TRUE(NameEsp::Gather(2650, FakeEngine::Syscall()), "assumption respawn gathered");
-	CHECK_INT(NameEsp::Current().players[0].health, 40,
-	          "a respawn falls back to the current assumption");
-	CHECK_TRUE(!NameEsp::Current().players[0].healthConfirmed,
-	          "the respawn is an estimate again");
-	NameEsp::SetSpawnHealthAssumption(100);   // restore the stock default for the tests below
-
-	// colour / fade / ratio
-	CHECK_NEAR(HealthEsp::HealthRatio(100), 1.0f, 1e-6, "full at 100");
-	CHECK_NEAR(HealthEsp::HealthRatio(200), 1.0f, 1e-6, "megahealth still a full bar");
-	CHECK_NEAR(HealthEsp::HealthRatio(50), 0.5f, 1e-6, "half");
-	CHECK_NEAR(HealthEsp::HealthRatio(0), 0.0f, 1e-6, "empty");
-	{
-		unsigned char rgb[3];
-		HealthEsp::HealthColor(1.0f, rgb);
-		CHECK_INT(rgb[0], 0, "full HP is green (no red)");
-		CHECK_INT(rgb[1], 255, "full HP is green");
-		HealthEsp::HealthColor(0.0f, rgb);
-		CHECK_INT(rgb[0], 255, "empty is red");
-		CHECK_INT(rgb[1], 0, "empty is not green");
-		HealthEsp::HealthColor(0.5f, rgb);
-		CHECK_INT(rgb[0], 128, "mid health mixes red");
-		CHECK_INT(rgb[1], 128, "mid health mixes green");
-	}
-	{
-		float scale = 0.0f, alpha = 0.0f;
-		HealthEsp::DistanceFade(0.0f, scale, alpha);
-		CHECK_NEAR(scale, 1.0f, 1e-6, "close: full scale");
-		CHECK_NEAR(alpha, 1.0f, 1e-6, "close: full alpha");
-		HealthEsp::DistanceFade(HealthEsp::kFadeStartDist, scale, alpha);
-		CHECK_NEAR(scale, 1.0f, 1e-6, "fade start: full scale");
-		HealthEsp::DistanceFade(HealthEsp::kFadeEndDist, scale, alpha);
-		CHECK_NEAR(scale, HealthEsp::kMinScale, 1e-6, "fade end: min scale");
-		CHECK_NEAR(alpha, 0.0f, 1e-6, "fade end: alpha 0");
-		HealthEsp::DistanceFade((HealthEsp::kFadeStartDist + HealthEsp::kFadeEndDist) * 0.5f,
-		                        scale, alpha);
-		CHECK_TRUE(scale > HealthEsp::kMinScale && scale < 1.0f, "mid fade interpolates scale");
-		CHECK_TRUE(alpha > 0.0f && alpha < 1.0f, "mid fade interpolates alpha");
-	}
-
-	// bar geometry: stacked under the name, never wider than the projected player
-	{
-		FakeEngine::Reset();
-		NameEsp::Reset();
-		FakeEngine::SetSnapshotTime(3000);
-		FakeEngine::SetLocalPlayer(0, here, none, angles, 26);
-		FakeEngine::SetPlayer(1, "\\n\\Bar\\t\\0", (const float[]){ 128.0f, 0.0f, 0.0f });
-		CHECK_TRUE(NameEsp::Gather(3000, FakeEngine::Syscall()), "bar frame gathered");
-		const NameEsp::PlayerTag& tag = NameEsp::Current().players[0];
-		const NameEsp::Viewport vp = { 0, 0, 800, 600 };
-		NameEsp::ScreenPoint p;
-		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, tag.origin, p),
-		           "head projects");
-		HealthEsp::BarGeom solo, stacked;
-		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p, 0.0f, solo),
-		           "solo bar");
-		CHECK_TRUE(HealthEsp::ComputeBar(tag, NameEsp::Current().view, vp, p,
-		           NameEsp::kEspRowHeight, stacked),
-		           "stacked bar");
-		CHECK_TRUE(solo.visible && stacked.visible, "both bars visible");
-		CHECK_TRUE(!solo.confirmed && !stacked.confirmed,
-		         "a never-hit tag computes an estimated (hatched) bar");
-		CHECK_TRUE(stacked.w < solo.w, "stacked bar is thinner than solo");
-		CHECK_TRUE(stacked.h < solo.h, "stacked bar is shorter than solo");
-		CHECK_NEAR(stacked.y, p.y + NameEsp::kEspRowHeight, 0.02,
-		           "stacked bar sits under the name");
-		CHECK_NEAR(solo.y, p.y, 0.02, "solo bar sits on the head tag");
-		CHECK_NEAR(solo.x + solo.w * 0.5f, p.x, 1.0, "solo bar is centred on the tag");
-
-		float leftW[3], rightW[3];
-		for (int i = 0; i < 3; ++i)
-		{
-			leftW[i]  = tag.origin[i] + NameEsp::Current().view.axis[1][i] * q3::kPlayerBboxHalfWidth;
-			rightW[i] = tag.origin[i] - NameEsp::Current().view.axis[1][i] * q3::kPlayerBboxHalfWidth;
-		}
-		NameEsp::ScreenPoint sl, sr;
-		CHECK_TRUE(NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, leftW, sl) &&
-		           NameEsp::ProjectWorldToScreen(NameEsp::Current().view, vp, rightW, sr),
-		           "bbox sides project");
-		const float modelW = fabsf(sr.x - sl.x);
-		CHECK_TRUE(solo.w <= modelW + 0.01f, "solo bar is not wider than the player");
-		CHECK_TRUE(stacked.w <= modelW + 0.01f, "stacked bar is not wider than the player");
-		CHECK_NEAR(solo.fillW, solo.w, 0.05, "full HP fills the bar");
-	}
-}
-
-// =============================================================================================== //
-// DISTANCE ESP: the "128M" text, the distance fade, and the row stack the three ESP overlays
-// share (the bar geometry above already checks the bar's half of it).
 // =============================================================================================== //
 static void TestDistanceEsp()
 {
@@ -1297,44 +1103,19 @@ static void TestDistanceEsp()
 		                         scale, alpha);
 		CHECK_TRUE(scale > DistanceEsp::kMinScale && scale < 1.0f, "mid fade interpolates scale");
 		CHECK_TRUE(alpha > 0.0f && alpha < 1.0f, "mid fade interpolates alpha");
-
-		// ... and the ramp must agree with the HEALTH ESP's at every point, so the two
-		// overlays fade together
-		const float samples[4] = { 100.0f, 950.0f, 1600.0f, 2501.0f };
-		for (int i = 0; i < 4; ++i)
-		{
-			float hs = 0.0f, ha = 0.0f, ds = 0.0f, da = 0.0f;
-			HealthEsp::DistanceFade(samples[i], hs, ha);
-			DistanceEsp::DistanceFade(samples[i], ds, da);
-			char what[64];
-			snprintf(what, sizeof(what), "sample %d: same ramp as the health ESP (scale)", i);
-			CHECK_NEAR(ds, hs, 1e-6, what);
-			snprintf(what, sizeof(what), "sample %d: same ramp as the health ESP (alpha)", i);
-			CHECK_NEAR(da, ha, 1e-6, what);
-		}
 	}
 
-	// the row stack: every combination of the three features
+	// the row stack: the distance only steps down for the name
 	{
 		NameEsp::EspRows r;
 
-		r = NameEsp::ComputeEspRows(false, false);   // health only
-		CHECK_NEAR(r.name, 0.0f, 1e-6, "health only: name at the anchor");
-		CHECK_NEAR(r.distance, 0.0f, 1e-6, "health only: distance at the anchor");
-		CHECK_NEAR(r.bar, 0.0f, 1e-6, "health only: bar at the anchor");
+		r = NameEsp::ComputeEspRows(false);   // distance alone
+		CHECK_NEAR(r.distance, 0.0f, 1e-6, "distance alone sits on the head anchor");
 
-		r = NameEsp::ComputeEspRows(true, false);    // name + health
-		CHECK_NEAR(r.name, 0.0f, 1e-6, "name on top");
-		CHECK_NEAR(r.bar, NameEsp::kEspRowHeight, 1e-6, "bar directly under the name");
-
-		r = NameEsp::ComputeEspRows(false, true);    // distance + health
-		CHECK_NEAR(r.distance, 0.0f, 1e-6, "no name: distance at the anchor");
-		CHECK_NEAR(r.bar, NameEsp::kEspRowHeight, 1e-6, "no name: bar under the distance");
-
-		r = NameEsp::ComputeEspRows(true, true);     // name + distance + health
-		CHECK_NEAR(r.name, 0.0f, 1e-6, "all three: name on top");
-		CHECK_NEAR(r.distance, NameEsp::kEspRowHeight, 1e-6, "all three: distance under the name");
-		CHECK_NEAR(r.bar, 2.0f * NameEsp::kEspRowHeight, 1e-6, "all three: bar on the last row");
+		r = NameEsp::ComputeEspRows(true);    // name + distance
+		CHECK_NEAR(r.name, 0.0f, 1e-6, "name on top of the anchor");
+		CHECK_NEAR(r.distance, NameEsp::kEspRowHeight, 1e-6,
+		           "distance one row under the name, never overlapping it");
 	}
 
 	// the value the fade is driven by: |cg.refdef.vieworg - cent->lerpOrigin|, gathered per tag
@@ -1352,7 +1133,7 @@ static void TestDistanceEsp()
 		CHECK_TRUE(NameEsp::Gather(1000, FakeEngine::Syscall()), "frame gathered");
 		CHECK_INT(NameEsp::Current().playerCount, 1, "one tag");
 		const NameEsp::PlayerTag& tag = NameEsp::Current().players[0];
-		const float want = HealthEsp::DistanceTo(NameEsp::Current().view.origin, tag.lerpOrigin);
+		const float want = DistanceBetween(NameEsp::Current().view.origin, tag.lerpOrigin);
 		CHECK_NEAR(tag.distance, want, 0.05, "tag distance is |vieworg - lerpOrigin|");
 		// view at (0,0,26), bot feet at (300,400,8): sqrt(300^2 + 400^2 + 18^2) = 500.32...
 		CHECK_NEAR(tag.distance, sqrtf(300.0f * 300.0f + 400.0f * 400.0f + 18.0f * 18.0f), 0.1,
@@ -1740,7 +1521,7 @@ static void TestWeaponLegAnchor()
 
 static void TestWeaponFadeMatchesOtherEsp()
 {
-	Section("Weapon ESP fade - the same ramp as the distance / health ESPs");
+	Section("Weapon ESP fade - the same ramp as the distance ESP");
 
 	float scale = 0.0f, alpha = 0.0f;
 	DistanceEsp::DistanceFade(100.0f, scale, alpha);
@@ -2719,7 +2500,6 @@ int main(void)
 	TestProjection();
 	TestTeamColors();
 	TestWorldThenHudCapture();
-	TestHealthEsp();
 	TestDistanceEsp();
 	TestWeaponNumberGather();
 	TestWeaponStockTable();

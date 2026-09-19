@@ -10,19 +10,18 @@
 //
 // Stacking
 // --------
-// The three ESP overlays each take one 16px row above the head anchor - the name, then the
-// distance, then the health bar - from NameEsp::ComputeEspRows(), so no combination of the
-// three features overlaps on screen: with all three on, the HEALTH ESP bar is on the last
-// row, the distance sits right under the name, and name + distance alone stack with nothing
-// else in between.
+// The head-anchored ESP overlays each take one 16px row above the head anchor - the name,
+// then the distance - from NameEsp::ComputeEspRows(), so no combination of the features
+// overlaps on screen: with both on, the name sits on the anchor and the distance right
+// under it, and either one alone takes the anchor row.
 //
 // Data
 // ----
 // The value is tag.distance: |cg.refdef.vieworg - cent->lerpOrigin| in world units - the
 // local player's view origin from the refdef NameEsp::Gather() projects with, and the
 // target's interpolated origin, exactly like the cgame lerps the model. NameEsp::Gather()
-// already computes it per tag (the HEALTH ESP fade is driven by the same value), so this
-// feature adds no extra read of the cgame. World units are displayed as metres - the
+// already computes it per tag (every fading overlay below is driven by the same value), so
+// this feature adds no extra read of the cgame. World units are displayed as metres - the
 // standard Q3 ESP convention - rounded to the nearest whole number so the string stays as
 // short as a distance can be.
 //
@@ -30,8 +29,8 @@
 // -----------------------------------
 // Instead of drawing everyone's distance at full size and opacity, the text scales down
 // (FONT_HEIGHT 14 -> 5px) and fades to transparent as the player moves from kFadeStartDist
-// to kFadeEndDist away - the same ramp the HEALTH ESP bars use, so the two overlays agree
-// about what "far" looks like.
+// to kFadeEndDist away - the same ramp WEAPON ESP uses, so the overlays agree about what
+// "far" looks like.
 //
 // The GL half lives in distanceEsp.cpp; the layout maths below is header-only so the tests
 // can exercise the row stacking / fade / text without a GL context.
@@ -46,7 +45,7 @@
 namespace DistanceEsp
 {
 	// Full size and opacity inside this many world units; fade toward kMinScale / alpha 0 by
-	// kFadeEndDist. Same ramp as HealthEsp::DistanceFade, so both overlays fade together.
+	// kFadeEndDist. The same ramp WEAPON ESP fades on, so the overlays fade together.
 	const float kFadeStartDist = 400.0f;
 	const float kFadeEndDist   = 2500.0f;
 	const float kMinScale      = 0.35f;
@@ -107,6 +106,6 @@ namespace DistanceEsp
 	void ResetDrawState();
 
 	// Draw() - the GL half, in distanceEsp.cpp. Called from the hooked SwapBuffers every
-	// frame, between NameEsp::Draw() and HealthEsp::Draw().
+	// frame, after NameEsp::Draw() and before WeaponEsp::Draw().
 	void Draw();
 }

@@ -15,11 +15,11 @@
 #   vm      vmFind.cpp (again the real file) - the scanners that find the cgame VM record and the
 #           cgame's gameState copy inside quake3.exe, driven with records built the way VM_Create()
 #           and CL_ParseGamestate() build them.
-#   gl      nameEsp.cpp + distanceEsp.cpp + healthEsp.cpp + glText.cpp + glDraw.cpp (again,
-#           the real files) against a stub <windows.h>/<gl/GL.h> that records every call, so
-#           the tags, bars and distance strings actually issued to GL::Font / the quad
-#           primitives can be asserted on - including the row stacking of the three ESP
-#           overlays and the distance text's scale + fade with range.
+#   gl      nameEsp.cpp + distanceEsp.cpp + glText.cpp + glDraw.cpp (again, the real files)
+#           against a stub <windows.h>/<gl/GL.h> that records every call, so the tags and
+#           distance strings actually issued to GL::Font / the quad primitives can be asserted
+#           on - including the row stacking of the head-anchored ESP overlays and the distance
+#           text's scale + fade with range.
 #   vmhook.o  vmHook.cpp, compiled only. It is the Win32 half of the VM hook (PE headers,
 #           VirtualQuery, Detours) and cannot run off Windows; tests/stub_win/ declares the Win32
 #           surface it touches so it still gets type-checked here.
@@ -41,7 +41,7 @@ BIN      := build
 CORE_SRCS := test_nameesp.cpp fake_engine.cpp $(ROOT)/nameEspCore.cpp $(ROOT)/weaponEspCore.cpp
 GL_SRCS   := test_gl.cpp fake_engine.cpp stub_glStateGuard.cpp \
              $(ROOT)/nameEsp.cpp $(ROOT)/distanceEsp.cpp $(ROOT)/nameEspCore.cpp \
-             $(ROOT)/healthEsp.cpp $(ROOT)/weaponEsp.cpp $(ROOT)/weaponEspCore.cpp \
+             $(ROOT)/weaponEsp.cpp $(ROOT)/weaponEspCore.cpp \
              $(ROOT)/glText.cpp $(ROOT)/glDraw.cpp
 VM_SRCS   := test_vmfind.cpp $(ROOT)/vmFind.cpp
 

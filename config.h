@@ -34,10 +34,6 @@ namespace Config
 		bool neonEnabled;     // "Neon" bloom chams (neonChams.h) - overrides the styles above while on
 		bool nameEsp;         // NAME ESP (nameEsp.h / vmHook.h) - player names through walls
 		bool distanceEsp;     // DISTANCE ESP (distanceEsp.h) - distance in metres above players
-		bool healthEsp;       // HEALTH ESP (healthEsp.h) - green-to-red bars above players
-		int  healthEspSpawnHealth; // HEALTH ESP: HP an unmeasured player (no EV_PAIN since
-		                          // spawn/respawn) is drawn at. 1..200, 100 on stock servers;
-		                          // raise/lower for servers that scale spawn health.
 		bool weaponEsp;      // WEAPON ESP (weaponEsp.h) - the player's current weapon at the
 		                     // leg position, through walls
 		int  weaponEspStyle; // WEAPON ESP style: 0 = Text (the weapon's name, GL::Font),

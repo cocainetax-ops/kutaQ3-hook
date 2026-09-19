@@ -95,29 +95,13 @@ team from the clientinfo, and a tag clamped to the screen edge is dimmed.
 **DISTANCE ESP** (`distanceEsp.h`) draws the distance to every other player in metres with an
 "M" after the number ("128M") above their head, using the same `GL::Font` display-list renderer
 and the same face and full size as NAME ESP, centred on the same head anchor. The value is
-`|cg.refdef.vieworg - cent->lerpOrigin|` in world units - the same one `NameEsp::Gather()`
-already computes per tag for the HEALTH ESP fade - rounded to the nearest whole number so the
-string stays as short as a distance can be. Instead of rendering everyone's distance at full
-size and opacity, the text scales down (14px -> 5px) and fades to transparent as the player
-moves 400 -> 2500 units away. The three ESP overlays stack in fixed 16px rows above the head
-anchor (`NameEsp::ComputeEspRows()`): the name, then the distance, then the health bar - a
-disabled feature takes no row, so nothing overlaps whatever combination is on, and with all
-three on the HEALTH ESP bar is on the last row.
-
-**HEALTH ESP** (`healthEsp.h`) draws a 2D bar at the same head anchor, using the player list
-`NameEsp::Gather()` already built. Stock 1.32 never networks other players' `STAT_HEALTH`, so
-the bar is a **damage-derived estimate, not a live health readout**: the only sample that
-reaches the client is `EV_PAIN`'s `eventParm` (the HP remaining at the moment of the hit). The
-bar therefore has two visible states — a player with no hit since spawn is drawn at the
-assumed spawn level (`HealthEspSpawnHealth`, default 100) as a neutral hatched "not measured"
-bar, and once an `EV_PAIN` is sampled the bar becomes a solid green-to-red fill at that last
-known HP. Nothing between hits is modelled: health packs, health regeneration packs and armor
-do not move the value (the server never sends those events for other players), and a healed
-player only re-measures on their next hit — `eventParm` is an absolute sample, so the bar then
-jumps to the true remaining HP. The estimate resets to the assumed spawn level on
-`EF_TELEPORT_BIT` (respawn) and with the level. Bars scale down and fade out with
-`|cg.refdef.vieworg - cent->lerpOrigin|` (400..2500 units), stay no wider than the projected
-player bbox (`pm->mins[0] = -15`), and sit underneath the name when both features are on.
+`|cg.refdef.vieworg - cent->lerpOrigin|` in world units - the one `NameEsp::Gather()` already
+computes per tag for the distance fade - rounded to the nearest whole number so the string
+stays as short as a distance can be. Instead of rendering everyone's distance at full size and
+opacity, the text scales down (14px -> 5px) and fades to transparent as the player moves
+400 -> 2500 units away. The head-anchored ESP overlays stack in fixed 16px rows above the head
+anchor (`NameEsp::ComputeEspRows()`): the name, then the distance under it - a disabled
+feature takes no row, so nothing overlaps whatever combination is on.
 
 It works on a stock install. No `vm_cgame`, no cgame DLL, no module to wait for.
 
@@ -394,7 +378,7 @@ styles selectable from the VISUALS tab (`Weapon ESP (OpenGL)` checkbox + Text / 
 
 The tag is centred on `lerpOrigin + kWeaponEspLegHeight` (`q3sdk.h`, `8.0f`): mid-leg, knee line -
 the standing bbox spans origin z `-24..+32` (`MINS_Z` / `bg_pmove.c`), so a whole model height sits
-between the weapon tag and the head-anchored stack (name / distance / health). That is why this
+between the weapon tag and the head-anchored stack (name / distance). That is why this
 ESP never overlaps the others for the same player. Projection, viewport offset handling, edge
 clamping and dimming are the same as the other ESPs (`NameEsp::ProjectWorldToScreen`).
 
@@ -507,7 +491,7 @@ TGA this loader reads (`iconsBadData`), or decoded and refused by GL (`iconsNoUp
 Instead of drawing everyone's weapon at full size and opacity, the tag scales down and fades out
 with range, driven by `|cg.refdef.vieworg - cent->lerpOrigin|` - the view origin the frame was
 rendered with and the player's interpolated origin, already computed per tag by `NameEsp::Gather()`
-as `tag.distance`. It uses the same ramp as the DISTANCE and HEALTH ESPs
+as `tag.distance`. It uses the same ramp as the DISTANCE ESP
 (`DistanceEsp::DistanceFade`: full inside `kFadeStartDist`, scale `kMinScale` / alpha 0 at
 `kFadeEndDist`), so all the overlays agree about what "far" looks like.
 
@@ -559,24 +543,14 @@ fade, stats - is exercised off Windows exactly like the other ESPs.
   ("128M") drawn above their head through walls, in the same font and full size as NAME ESP,
   centred on the same head anchor. Toggled with the **Distance ESP (OpenGL)** tickbox in the
   VISUALS tab (`DistanceEspEnabled` in `kutaQ3.cfg`). The value is
-  `|cg.refdef.vieworg - cent->lerpOrigin|`, the same one the HEALTH ESP fade uses. The text
-  scales down (14px -> 5px) and fades out with range (400 -> 2500 units) instead of drawing
-  everyone at full size and opacity. The three ESP overlays stack in their own 16px rows -
-  name, distance, then the health bar on the last row - so no combination of the three
-  overlaps on screen.
-- **HEALTH ESP** (`healthEsp.h`) - a 2D health bar above every other player, through walls.
-  Toggled independently with the **Health ESP (OpenGL)** tickbox in the VISUALS tab
-  (`HealthEspEnabled` in `kutaQ3.cfg`). Stock Q3 does not put other players' `STAT_HEALTH` in
-  the snapshot, so the value is the last `EV_PAIN` sample: an unmeasured player (no hit since
-  spawn) is drawn as a neutral hatched bar at the assumed spawn level (`HealthEspSpawnHealth`,
-  default 100), a measured player as a solid green-to-red bar at the last known HP. Heals
-  (health/regen packs, armor) are not modelled; the next hit re-measures. Bars are thinner and
-  shorter than the projected player model, fade and shrink with distance, and sit on the last
-  row of the ESP stack - underneath the name and / or the distance when those are on.
+  `|cg.refdef.vieworg - cent->lerpOrigin|`, the same one the distance fade is driven by. The
+  text scales down (14px -> 5px) and fades out with range (400 -> 2500 units) instead of
+  drawing everyone at full size and opacity. The head-anchored ESP overlays stack in their own
+  16px rows - the name, then the distance under it - so no combination overlaps on screen.
 - **WEAPON ESP** (`weaponEsp.h` / `weaponEspCore.cpp` / `weaponEsp.cpp`) - every other player's
   current weapon at their **leg position** (not the head), through walls, the only overlay
   anchored **below** the model (`kWeaponEspLegHeight` 8.0f in `q3sdk.h`) so it never collides
-  with the head-anchored name / distance / health stack. Toggled with the **Weapon ESP
+  with the head-anchored name / distance stack. Toggled with the **Weapon ESP
   (OpenGL)** tickbox in the VISUALS tab (`WeaponEspEnabled` in `kutaQ3.cfg`). Two styles
   (`WeaponEspStyle`):
 
@@ -595,7 +569,7 @@ fade, stats - is exercised off Windows exactly like the other ESPs.
     the three reasons it was (`iconsNotInPak` / `iconsBadData` / `iconsNoUpload`, plus
     `LastIconNote()`).
 
-  Scales down and fades out with `|vieworg - lerpOrigin|` like Distance/Health (font buckets
+  Scales down and fades out with `|vieworg - lerpOrigin|` like the distance ESP (font buckets
   `14,12,10,8,6,5` for Text, `36*scale` for Icon), fades in over
   220ms per client, edge-clamped and dimmed, `WP_NONE` draws nothing.
 
@@ -638,8 +612,6 @@ ChamsStyle=0          ; 0 = solid, 1 = wireframe
 NeonEnabled=0         ; 1 = neon bloom chams override the style above
 NameEspEnabled=1      ; 1 = player names on screen (reads the cgame VM directly)
 DistanceEspEnabled=1  ; 1 = distance in metres above players (scaled + faded with range)
-HealthEspEnabled=1    ; 1 = health bars above players (estimated: last EV_PAIN sample, hatched until first hit)
-HealthEspSpawnHealth=100 ; 1..200 = HP an unmeasured player (no hit since spawn) is drawn at
 WeaponEspEnabled=1    ; 1 = the player's current weapon at their leg position (through the cgame's own weapon table)
 WeaponEspStyle=0      ; 0 = text (weapon name), 1 = icon (the cgame's item icon)
 LogShaders=1
@@ -663,9 +635,9 @@ make -C tests check
 | target | what it runs |
 |---|---|
 | `mirror` | `SDK/code/client/cl_sdkmirror.cpp`: every size, offset and syscall number in `q3sdk.h`, and the `vm_t` mirror in `vmFind.h`, as a `static_assert` against the real 1.32b headers. Drift fails the *compile*. |
-| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - HEALTH ESP's `EV_PAIN` health tracking - including the estimated-vs-measured state (hatched until the first hit, reset on respawn) and the configurable spawn-health assumption - DISTANCE ESP's "NM" text format, distance fade and the three-way row stack, WEAPON ESP's `bg_itemlist[]` shape scan (stock 52-byte and ioq3 72-byte layouts, entry-0 prefilter, pointer/string validation, weapon extraction with `pickup_name` fallback), `WeaponName` / `WeaponIcon` resolution, `LegAnchor` (mid-leg `kWeaponEspLegHeight`), and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. Also WEAPON ESP's icon pipeline out of `weaponEspCore.cpp`: `DecodeTga` against generated TGAs (types 2/3/10, 8/16/24/32bpp, top-down and bottom-up, id field, truncation, the refusals - including the 64x64 icon whose height byte used to be read as its pixel depth) and `PakReadEntry` against hand-built pak archives with real zlib streams for all three DEFLATE block types. |
+| `core` | the real `nameEspCore.cpp`, driven by a fake engine syscall trampoline (`tests/fake_engine.cpp`): infostring parsing, which entities become tags, the view rebuild (including the captured `refdef_t` and its shape checks), the smoothing - including finding the sample it interpolates from when the exact previous message number is gone, and the interpolation clock surviving a missing refdef - DISTANCE ESP's "NM" text format, distance fade and the two-row stack, WEAPON ESP's `bg_itemlist[]` shape scan (stock 52-byte and ioq3 72-byte layouts, entry-0 prefilter, pointer/string validation, weapon extraction with `pickup_name` fallback), `WeaponName` / `WeaponIcon` resolution, `LegAnchor` (mid-leg `kWeaponEspLegHeight`), and the projection, checked against the engine's own `AngleVectors()` / `AnglesToAxis()` compiled out of `SDK/code/game/q_math.c`. Also WEAPON ESP's icon pipeline out of `weaponEspCore.cpp`: `DecodeTga` against generated TGAs (types 2/3/10, 8/16/24/32bpp, top-down and bottom-up, id field, truncation, the refusals - including the 64x64 icon whose height byte used to be read as its pixel depth) and `PakReadEntry` against hand-built pak archives with real zlib streams for all three DEFLATE block types. |
 | `vm` | the real `vmFind.cpp`: the scanners that find the cgame `vm_t` and the cgame's `gameState_t` copy, driven with records built the way `VM_Create()` and `CL_ParseGamestate()` build them, plus every near-miss they have to reject - and the copy of a level that has been *running*, whose offsets a runtime `"cs"` has put out of index order. Also `VmFind::SameVmInstance`, the rule that decides whether a captured pointer survives a map change. |
-| `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `healthEsp.cpp` + `weaponEsp.cpp` + `weaponEspCore.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the three ESP overlays stacking in their own rows, the distance text's scale + fade with range, and WEAPON ESP's text at the leg anchor (orange, not team colour), icon chips when no texture exists, stacking below the head-anchored stack, and scale + fade with range. |
+| `gl` | the real `nameEsp.cpp` + `distanceEsp.cpp` + `weaponEsp.cpp` + `weaponEspCore.cpp` + `glText.cpp` + `glDraw.cpp` against a stub `<windows.h>` / `<gl/GL.h>` (`tests/stub/`) that records every call, so the raster positions, colours, alphas, faces and strings actually issued for a frame can be asserted on - including the fade-in ramp across frames, the chest anchor holding its ground, the head-anchored ESP overlays stacking in their own rows, the distance text's scale + fade with range, and WEAPON ESP's text at the leg anchor (orange, not team colour), icon chips when no texture exists, stacking below the head-anchored stack, and scale + fade with range. |
 | `vmhook.o` | the real `vmHook.cpp`, compiled only - it is the Win32 half (PE headers, `VirtualQuery`, Detours) and cannot run off Windows. `tests/stub_win/` declares just the Win32 surface it touches, so a typo or a type mismatch fails here rather than in Visual Studio. |
 
 They need nothing but a C++11 compiler; `tests/build/` is ignored.

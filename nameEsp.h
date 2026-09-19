@@ -99,13 +99,6 @@ namespace NameEsp
 		                      // WEAPON ESP resolves the name / icon through the cgame's item
 		                      // table with it, so whatever a mod numbers its weapons as, the
 		                      // ESP follows (see weaponEsp.h).
-		int   health;         // last known HP (assumed spawn level until EV_PAIN; 1..200). Stock
-		                      // Q3 does not network other players' STAT_HEALTH - EV_PAIN's
-		                      // eventParm is the only snapshot field that carries it, so this is
-		                      // a damage-derived estimate, never a live readout.
-		bool  healthConfirmed;// true once an EV_PAIN has been sampled since spawn/respawn.
-		                      // false = health is the assumed spawn level (see
-		                      // SetSpawnHealthAssumption), not a measurement.
 		float distance;       // |cg.refdef.vieworg - lerpOrigin|, world units
 	};
 
@@ -132,33 +125,30 @@ namespace NameEsp
 	};
 
 	// --------------------------------------------------------------------------------------------
-	// The stack the ESP overlays draw above a player's head anchor. Each enabled text feature
-	// takes one 16px row (FONT_HEIGHT + 2px gap), top to bottom: NAME ESP, then DISTANCE ESP,
-	// and the HEALTH ESP bar always sits on the last row. A disabled feature takes no row, so
-	// the ones that are on pack up against the anchor:
+	// The stack the ESP overlays draw above a player's head anchor. Each enabled feature takes
+	// one 16px row (FONT_HEIGHT + 2px gap), top to bottom: NAME ESP, then DISTANCE ESP. A
+	// disabled feature takes no row, so the ones that are on pack up against the anchor:
 	//
-	//   name + health            -> name at 0, bar at 16
-	//   name + distance + health -> name at 0, distance at 16, bar at 32 (last row)
+	//   name          -> name at 0
+	//   distance      -> distance at 0
+	//   name+distance -> name at 0, distance at 16
 	//
-	// Every feature reads its offset from ComputeEspRows() - that is what keeps the three
-	// overlays from overlapping whatever combination the menu has enabled.
+	// Every feature reads its offset from ComputeEspRows() - that is what keeps the overlays
+	// from overlapping whatever combination the menu has enabled. The distance row only moves
+	// down for the name, so that is the one flag the layout needs.
 	struct EspRows
 	{
 		float name;      // px down from the head anchor: top of the name text
 		float distance;  // px down from the head anchor: top of the distance text
-		float bar;       // px down from the head anchor: top of the health bar
 	};
 
 	const float kEspRowHeight = 16.0f;   // FONT_HEIGHT (14, see glText.h) + 2px gap
 
-	inline EspRows ComputeEspRows(bool nameOn, bool distanceOn)
+	inline EspRows ComputeEspRows(bool nameOn)
 	{
 		EspRows rows;
 		rows.name     = 0.0f;
 		rows.distance = nameOn ? kEspRowHeight : 0.0f;
-		rows.bar      = rows.distance;
-		if (distanceOn)
-			rows.bar += kEspRowHeight;
 		return rows;
 	}
 
@@ -206,16 +196,6 @@ namespace NameEsp
 	bool CaptureWorldRefdef(const q3::refdef_t& candidate, q3::refdef_t& captured);
 
 	bool Gather(int serverTime, q3::syscall_t syscall, const q3::refdef_t* refdef = NULL);
-
-	// The HP a freshly seen or just respawned player is assumed to have until the first EV_PAIN
-	// is sampled for them. Stock 1.32 spawns everyone at 100 and never networks the value, so
-	// the assumption is only right for stock servers; servers that scale spawn health (e.g.
-	// handicap-spawn mods) should set this to match. Clamped to 1..200, the same range the
-	// tracker applies to pain samples. Unconfirmed players track the CURRENT value, so a change
-	// here moves every not-yet-hit bar immediately; confirmed (measured) players are untouched.
-	// Called from the SwapBuffers hook with the live config value (HealthEspSpawnHealth).
-	void SetSpawnHealthAssumption(int hp);
-	int  SpawnHealthAssumption();
 
 	// Drop the frame and the per-client smoothing history: the cgame shut down or was unloaded, so
 	// the last gathered data is about a level that no longer exists.

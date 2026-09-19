@@ -3,8 +3,8 @@
 //
 // Renders the distance tags the portable half (nameEspCore.cpp) gathered, with the same
 // GL::Font display-list renderer NAME ESP uses. Runs from the hooked SwapBuffers in
-// main.cpp, between NameEsp::Draw() and HealthEsp::Draw(); the row offset comes from
-// NameEsp::ComputeEspRows(), so the three ESP overlays stack without overlapping.
+// main.cpp, after NameEsp::Draw() and before WeaponEsp::Draw(); the row offset comes from
+// NameEsp::ComputeEspRows(), so the head-anchored ESP overlays stack without overlapping.
 //
 // Scaling: a GL::Font bakes ONE fixed face into its display list, and glBitmap glyphs render
 // in window pixels - they are not affected by the modelview transform, so glScalef would move
@@ -40,7 +40,7 @@ namespace
 	// ---- per-client draw state ----------------------------------------------------------------
 	// The tags themselves are rebuilt from scratch every frame; what has to survive across
 	// frames is how far a tag has faded in and which anchor it is currently using. Same shape
-	// and intent as nameEsp.cpp / healthEsp.cpp: keyed by client number, fixed size, no
+	// and intent as nameEsp.cpp / weaponEsp.cpp: keyed by client number, fixed size, no
 	// allocation.
 	const int kFadeInMs         = 220;   // a tag ramps 0 -> full over this
 	const int kHeadFramesToBack = 3;     // head anchor must hold this long before the tag returns
@@ -191,9 +191,9 @@ void DistanceEsp::Draw()
 	++s_frameSerial;
 
 	// The row the distance text sits in: under the name when NAME ESP is on, on the head
-	// anchor itself when it is not (the health bar takes the row under the distance).
+	// anchor itself when it is not.
 	const NameEsp::EspRows rows =
-		NameEsp::ComputeEspRows(Config::g_Settings.nameEsp, true);
+		NameEsp::ComputeEspRows(Config::g_Settings.nameEsp);
 
 	{
 		// The overlay changes plenty of legacy state Quake 3 caches in its own glState shadow;
@@ -208,7 +208,7 @@ void DistanceEsp::Draw()
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 		// Neutral white: readable on any background, and distinct from the name ESP's team
-		// colours and the health bar's green-to-red ramp.
+		// colours.
 		static const unsigned char kColor[3]  = { 255, 255, 255 };
 		static const unsigned char black[3]   = { 0, 0, 0 };
 
